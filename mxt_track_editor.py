@@ -332,7 +332,7 @@ class MXTRoad_OT_AddEmbed(Operator):
             if fcu:
                 for kp in fcu.keyframe_points:
                     kp.interpolation = 'BEZIER'
-                _linearize_fcurve_handles(fcu)
+                _linearize_fcurve_handles_x(fcu)
 
         emb = props.embeds.add()
         emb.label = f"Embed {len(props.embeds)}"
@@ -394,7 +394,7 @@ class MXTRoad_OT_AddModulation(Operator):
             if fcu:
                 for kp in fcu.keyframe_points:
                     kp.interpolation = 'BEZIER'
-                _linearize_fcurve_handles(fcu)
+                _linearize_fcurve_handles_x(fcu)
 
         mod = props.modulations.add()
         mod.label = f"Mod {len(props.modulations)}"
@@ -727,6 +727,29 @@ def _linearize_fcurve_handles(fcu: bpy.types.FCurve):
             kp.handle_left_type  = 'VECTOR'
             kp.handle_left[:]    = kp.co
     fcu.update()
+
+def _linearize_fcurve_handles_x(fcu: bpy.types.FCurve):
+    """Set handle X positions to -1/3 and +1/3 of surrounding keys without
+    modifying Y values. All handles are forced to ALIGNED."""
+    kps = fcu.keyframe_points
+    if len(kps) < 2:
+        return
+
+    for idx, kp in enumerate(kps):
+        kp.handle_left_type = 'ALIGNED'
+        kp.handle_right_type = 'ALIGNED'
+
+        if idx > 0:
+            prev = kps[idx - 1]
+            dx_prev = kp.co.x - prev.co.x
+            kp.handle_left.x = kp.co.x - dx_prev / 3.0
+
+        if idx < len(kps) - 1:
+            nxt = kps[idx + 1]
+            dx_next = nxt.co.x - kp.co.x
+            kp.handle_right.x = kp.co.x + dx_next / 3.0
+
+    fcu.update()
 def _update_road_segment_visual_guide_logic(road_parent_empty, report_fn=None):
     if not road_parent_empty or not hasattr(road_parent_empty, "mxt_road_overall_props"):
         if report_fn: report_fn({'WARNING'}, "Invalid road parent empty for visual update.")
@@ -758,6 +781,39 @@ def _find_road_parent(obj):
             return obj
         obj = obj.parent
     return None
+
+def _enforce_linear_handles_for_object(obj):
+    if not obj or not obj.animation_data or not obj.animation_data.action:
+        return
+
+    parent = _find_road_parent(obj)
+    if not parent:
+        return
+
+    props = parent.mxt_road_overall_props
+
+    act = obj.animation_data.action
+
+    if obj == props.curve_matrix_helper_empty:
+        for fc in act.fcurves:
+            _linearize_fcurve_handles_x(fc)
+
+    elif obj == props.openness_helper:
+        fcu = act.fcurves.find("location", index=0)
+        if fcu:
+            _linearize_fcurve_handles_x(fcu)
+
+    elif any(mod.helper == obj for mod in props.modulations):
+        for idx in [1, 2]:
+            fcu = act.fcurves.find("location", index=idx)
+            if fcu:
+                _linearize_fcurve_handles_x(fcu)
+
+    elif any(emb.helper == obj for emb in props.embeds):
+        for idx in [1, 2]:
+            fcu = act.fcurves.find("location", index=idx)
+            if fcu:
+                _linearize_fcurve_handles_x(fcu)
 def schedule_road_parent_visual_update(cp_empty_obj, context):
     global mxt_roads_pending_visual_update, mxt_timer_is_active
     if not cp_empty_obj: return
@@ -851,7 +907,7 @@ def _process_live_updates():
                 fcu = action.fcurves.find("location", index=0)
                 if fcu:
                     fcu.keyframe_points[0].interpolation = fcu.keyframe_points[1].interpolation = 'CONSTANT'
-                    _linearize_fcurve_handles(fcu)
+                    _linearize_fcurve_handles_x(fcu)
                 parent.mxt_road_overall_props.openness_helper = helper_data
         
         while _cm_pending:
@@ -926,19 +982,21 @@ def mxt_on_depsgraph_update(scene, depsgraph):
 
     
     for upd in depsgraph.updates:
-        
+
         if upd.is_updated_transform and isinstance(upd.id, bpy.types.Object):
+            _enforce_linear_handles_for_object(upd.id)
             check_and_schedule(upd.id)
 
-        
+
         elif isinstance(upd.id, bpy.types.Action):
             action = upd.id
-            
-            
+
+
             for o in bpy.data.objects:
                 if o.animation_data and o.animation_data.action == action:
+                    _enforce_linear_handles_for_object(o)
                     check_and_schedule(o)
-                    break 
+                    break
 
     
     for parent in parents_to_rebake_cm:
@@ -1129,7 +1187,7 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
                 if f_e_new:
                     for kp in f_e_new.keyframe_points:
                         kp.interpolation = 'BEZIER'
-                    _linearize_fcurve_handles(f_e_new)
+                    _linearize_fcurve_handles_x(f_e_new)
                 
 
                 mod_new = props.modulations.add()
@@ -1180,7 +1238,7 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
                     if fcu:
                         for kp in fcu.keyframe_points:
                             kp.interpolation = 'BEZIER'
-                        _linearize_fcurve_handles(fcu)
+                        _linearize_fcurve_handles_x(fcu)
                 
 
                 
@@ -1904,7 +1962,7 @@ class MXTRoad_OT_GenerateCurveMatrix(Operator):
         for fc in act.fcurves:
             for kp in fc.keyframe_points:
                 kp.interpolation = 'BEZIER'
-            _linearize_fcurve_handles(fc)
+            _linearize_fcurve_handles_x(fc)
             fc.update()
         if isinstance(MXTRoad_OT_GenerateCurveMatrix, Operator):
             if report_fn: report_fn({'INFO'}, f"Baked {len(t_samples)} keys with full orientation logic.")
@@ -2002,7 +2060,7 @@ class MXTRoad_OT_GenerateCurveMatrix(Operator):
             _add_key(curves[("scale",2)], frame, scl.z)
 
         for fc in curves.values():
-            _linearize_fcurve_handles(fc)
+            _linearize_fcurve_handles_x(fc)
             fc.update()
 
         if report_fn: report_fn({'INFO'}, f"Baked Eased Line segment with {len(t_samples)} keys.")
@@ -2148,7 +2206,7 @@ class MXTRoad_OT_GenerateCurveMatrix(Operator):
             _add_key(curves[("scale", 2)], fr, scl.z)
 
         for fcu in curves.values():
-            _linearize_fcurve_handles(fcu)
+            _linearize_fcurve_handles_x(fcu)
             fcu.update()
 
         if report_fn:
