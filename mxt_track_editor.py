@@ -729,25 +729,37 @@ def _linearize_fcurve_handles(fcu: bpy.types.FCurve):
     fcu.update()
 
 def _linearize_fcurve_handles_x(fcu: bpy.types.FCurve):
-    """Set handle X positions to -1/3 and +1/3 of surrounding keys without
-    modifying Y values. All handles are forced to ALIGNED."""
+    """Position handles one-third to neighbors while keeping their angle."""
     kps = fcu.keyframe_points
     if len(kps) < 2:
         return
 
     for idx, kp in enumerate(kps):
-        kp.handle_left_type = 'ALIGNED'
-        kp.handle_right_type = 'ALIGNED'
+        left_vec = kp.handle_left - kp.co
+        right_vec = kp.handle_right - kp.co
 
         if idx > 0:
             prev = kps[idx - 1]
             dx_prev = kp.co.x - prev.co.x
-            kp.handle_left.x = kp.co.x - dx_prev / 3.0
+            target_dx = -dx_prev / 3.0
+            if abs(left_vec.x) > 1e-6:
+                scale = target_dx / left_vec.x
+                kp.handle_left = kp.co + left_vec * scale
+            else:
+                kp.handle_left.x = kp.co.x + target_dx
 
         if idx < len(kps) - 1:
             nxt = kps[idx + 1]
             dx_next = nxt.co.x - kp.co.x
-            kp.handle_right.x = kp.co.x + dx_next / 3.0
+            target_dx = dx_next / 3.0
+            if abs(right_vec.x) > 1e-6:
+                scale = target_dx / right_vec.x
+                kp.handle_right = kp.co + right_vec * scale
+            else:
+                kp.handle_right.x = kp.co.x + target_dx
+
+        kp.handle_left_type = 'ALIGNED'
+        kp.handle_right_type = 'ALIGNED'
 
     fcu.update()
 def _update_road_segment_visual_guide_logic(road_parent_empty, report_fn=None):
@@ -796,7 +808,7 @@ def _enforce_linear_handles_for_object(obj):
 
     if obj == props.curve_matrix_helper_empty:
         for fc in act.fcurves:
-            _linearize_fcurve_handles_x(fc)
+            _linearize_fcurve_handles(fc)
 
     elif obj == props.openness_helper:
         fcu = act.fcurves.find("location", index=0)
@@ -1962,7 +1974,7 @@ class MXTRoad_OT_GenerateCurveMatrix(Operator):
         for fc in act.fcurves:
             for kp in fc.keyframe_points:
                 kp.interpolation = 'BEZIER'
-            _linearize_fcurve_handles_x(fc)
+            _linearize_fcurve_handles(fc)
             fc.update()
         if isinstance(MXTRoad_OT_GenerateCurveMatrix, Operator):
             if report_fn: report_fn({'INFO'}, f"Baked {len(t_samples)} keys with full orientation logic.")
@@ -2060,7 +2072,7 @@ class MXTRoad_OT_GenerateCurveMatrix(Operator):
             _add_key(curves[("scale",2)], frame, scl.z)
 
         for fc in curves.values():
-            _linearize_fcurve_handles_x(fc)
+            _linearize_fcurve_handles(fc)
             fc.update()
 
         if report_fn: report_fn({'INFO'}, f"Baked Eased Line segment with {len(t_samples)} keys.")
@@ -2206,7 +2218,7 @@ class MXTRoad_OT_GenerateCurveMatrix(Operator):
             _add_key(curves[("scale", 2)], fr, scl.z)
 
         for fcu in curves.values():
-            _linearize_fcurve_handles_x(fcu)
+            _linearize_fcurve_handles(fcu)
             fcu.update()
 
         if report_fn:
