@@ -296,6 +296,11 @@ class MXTRoad_RoadSegmentOverallProperties(PropertyGroup):
         type=bpy.types.Object,
         poll=lambda self, object: object.type == 'EMPTY'
     )
+    preview_mesh_exists: BoolProperty(
+        name="Preview Mesh Exists",
+        description="Internal flag tracking if this segment has a preview mesh",
+        default=False
+    )
 
 
 class MXT_UL_Embeds(bpy.types.UIList):
@@ -984,6 +989,21 @@ def mxt_on_depsgraph_update(scene, depsgraph):
     
     for parent in parents_to_rebuild_mesh:
         schedule_mesh_build(parent)
+
+    # If a preview mesh was removed manually, delete the entire segment
+    parents_to_check = [obj for obj in bpy.data.objects
+                        if getattr(obj, "mxt_road_overall_props", None)
+                        and obj.mxt_road_overall_props.is_mxt_road_segment_parent]
+    for parent in parents_to_check:
+        props = parent.mxt_road_overall_props
+        mesh_name = f"{parent.name}_PreviewMesh"
+        mesh_exists = bpy.data.objects.get(mesh_name) is not None
+        if props.preview_mesh_exists:
+            if not mesh_exists:
+                _delete_road_segment(parent)
+        else:
+            if mesh_exists:
+                props.preview_mesh_exists = True
 class MXTRoad_OT_LinearizeSelectedFCurves(Operator):
     bl_idname = "mxt_road.linearize_selected_fcurves"
     bl_label  = "Enforce ⅓ Handles"
@@ -1057,6 +1077,27 @@ def _create_cp_empty(context, parent_obj, name, location_in_parent_space, time_v
                 fcu.group = fcurve_group
     context.view_layer.objects.active = parent_obj
     return cp_empty
+
+def _delete_road_segment(parent_obj):
+    if not parent_obj:
+        return
+
+    # Remove all child objects and their actions
+    for child in list(parent_obj.children):
+        if child.animation_data and child.animation_data.action and child.animation_data.action.users <= 1:
+            bpy.data.actions.remove(child.animation_data.action)
+        bpy.data.objects.remove(child, do_unlink=True)
+
+    if parent_obj.animation_data and parent_obj.animation_data.action and parent_obj.animation_data.action.users <= 1:
+        bpy.data.actions.remove(parent_obj.animation_data.action)
+
+    _cm_pending.discard(parent_obj.name)
+    _mesh_pending.discard(parent_obj.name)
+    _openness_helper_to_create.discard(parent_obj.name)
+    _openness_helper_to_destroy.discard(parent_obj.name)
+    mxt_roads_pending_visual_update.discard(parent_obj.name)
+
+    bpy.data.objects.remove(parent_obj, do_unlink=True)
 class MXTRoad_OT_CreateRoadSegment(Operator):
     bl_idname = "mxt_road.create_segment_empties"
     bl_label  = "New Road Segment (Empties)"
@@ -2579,6 +2620,7 @@ class MXTRoad_OT_GenerateMesh(Operator):
             mesh_obj = bpy.data.objects.new(mesh_name, mesh_data)
             mesh_obj.parent = road_parent
             context.collection.objects.link(mesh_obj)
+        props.preview_mesh_exists = True
         
         mesh_obj.data.materials.clear()
         material_map = {}
