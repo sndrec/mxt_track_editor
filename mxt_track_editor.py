@@ -313,7 +313,7 @@ class MXTRoad_OT_AddEmbed(Operator):
         if not seg: return {'CANCELLED'}
         props = seg.mxt_road_overall_props
 
-        bpy.ops.object.empty_add(type='SPHERE', radius=10, location=seg.location)
+        bpy.ops.object.empty_add(type='SPHERE', radius=0, location=seg.location)
         helper = ctx.active_object
         helper.name = f"{seg.name}_Embed_{len(props.embeds):02d}"
         helper.parent = seg
@@ -332,6 +332,8 @@ class MXTRoad_OT_AddEmbed(Operator):
             if fcu:
                 for kp in fcu.keyframe_points:
                     kp.interpolation = 'BEZIER'
+                    kp.handle_left_type = "LINEAR_X"
+                    kp.handle_right_type = "LINEAR_X"
                 _linearize_fcurve_handles_smooth(fcu)
 
         emb = props.embeds.add()
@@ -368,7 +370,7 @@ class MXTRoad_OT_AddModulation(Operator):
         if not seg: return {'CANCELLED'}
         props = seg.mxt_road_overall_props
         
-        bpy.ops.object.empty_add(type='SPHERE', radius=10, location=seg.location)
+        bpy.ops.object.empty_add(type='SPHERE', radius=0, location=seg.location)
         helper = context.active_object
         helper.name = f"{seg.name}_Mod_{len(props.modulations):02d}"
         helper.parent = seg
@@ -394,6 +396,8 @@ class MXTRoad_OT_AddModulation(Operator):
             if fcu:
                 for kp in fcu.keyframe_points:
                     kp.interpolation = 'BEZIER'
+                    kp.handle_left_type = "LINEAR_X"
+                    kp.handle_right_type = "LINEAR_X"
                 _linearize_fcurve_handles_smooth(fcu)
 
         mod = props.modulations.add()
@@ -585,7 +589,7 @@ class MXTRoad_OT_ConvertSegmentType(Operator):
             
             axis_helper = bpy.data.objects.new(f"{parent.name}.SpiralAxisHelper", None)
             axis_helper.empty_display_type = 'ARROWS'
-            axis_helper.empty_display_size = max(5.0, (start_scl.x + start_scl.y) * 0.5)
+            axis_helper.empty_display_size = start_scl.x
             
             axis_helper.matrix_world = Matrix.Translation(start_loc) @ start_rot.to_matrix().to_4x4()
             context.collection.objects.link(axis_helper)
@@ -595,7 +599,7 @@ class MXTRoad_OT_ConvertSegmentType(Operator):
             
             fcurve_helper = bpy.data.objects.new(f"{parent.name}.SpiralHelper", None)
             fcurve_helper.empty_display_type = 'SPHERE'
-            fcurve_helper.empty_display_size = 2
+            fcurve_helper.empty_display_size = 0
             context.collection.objects.link(fcurve_helper)
             fcurve_helper.parent = parent
             fcurve_helper.location = parent.location 
@@ -677,8 +681,8 @@ def _linearize_fcurve_handles(fcu: bpy.types.FCurve):
 
     for idx, kp in enumerate(kps):
         # ensure handle type first so Blender doesn't reset lengths when changed
-        kp.handle_left_type = 'ALIGNED'
-        kp.handle_right_type = 'ALIGNED'
+        kp.handle_left_type = 'LINEAR_X'
+        kp.handle_right_type = 'LINEAR_X'
 
         left_vec = kp.handle_left - kp.co
         right_vec = kp.handle_right - kp.co
@@ -730,10 +734,10 @@ def _linearize_fcurve_handles_smooth(fcu: bpy.types.FCurve):
             dx_prev = kp.co.x - kp_prev.co.x
             dx_next = kp_next.co.x - kp.co.x
 
-            kp.handle_left_type  = 'FREE'
+            kp.handle_left_type  = 'LINEAR_X'
             kp.handle_left.x     = kp.co.x - dx_prev / 3.0
             kp.handle_left.y     = kp.co.y - slope * dx_prev / 3.0
-            kp.handle_right_type = 'FREE'
+            kp.handle_right_type = 'LINEAR_X'
             kp.handle_right.x    = kp.co.x + dx_next / 3.0
             kp.handle_right.y    = kp.co.y + slope * dx_next / 3.0
 
@@ -741,24 +745,24 @@ def _linearize_fcurve_handles_smooth(fcu: bpy.types.FCurve):
             slope = (kp.co.y - kp_prev.co.y) / (kp.co.x - kp_prev.co.x)
             dx_prev = kp.co.x - kp_prev.co.x
 
-            kp.handle_left_type  = 'FREE'
+            kp.handle_left_type  = 'LINEAR_X'
             kp.handle_left.x     = kp.co.x - dx_prev / 3.0
             kp.handle_left.y     = kp.co.y - slope * dx_prev / 3.0
 
             
-            kp.handle_right_type = 'VECTOR'
+            kp.handle_right_type = 'LINEAR_X'
             kp.handle_right[:]   = kp.co
 
         else:                   
             slope = (kp_next.co.y - kp.co.y) / (kp_next.co.x - kp.co.x)
             dx_next = kp_next.co.x - kp.co.x
 
-            kp.handle_right_type = 'FREE'
+            kp.handle_right_type = 'LINEAR_X'
             kp.handle_right.x    = kp.co.x + dx_next / 3.0
             kp.handle_right.y    = kp.co.y + slope * dx_next / 3.0
 
             
-            kp.handle_left_type  = 'VECTOR'
+            kp.handle_left_type  = 'LINEAR_X'
             kp.handle_left[:]    = kp.co
     fcu.update()
 def _update_road_segment_visual_guide_logic(road_parent_empty, report_fn=None):
@@ -872,7 +876,7 @@ def _process_live_updates():
             parent = bpy.data.objects.get(name)
             if parent and not parent.mxt_road_overall_props.openness_helper:
                 helper_data = bpy.data.objects.new(f"{parent.name}_OpennessHelper", None)
-                helper_data.empty_display_type, helper_data.empty_display_size = 'SPHERE', 5
+                helper_data.empty_display_type, helper_data.empty_display_size = 'SPHERE', 0
                 parent.users_collection[0].objects.link(helper_data)
                 helper_data.parent, helper_data.location = parent, parent.location
                 
@@ -1042,6 +1046,8 @@ def _create_cp_empty(context, parent_obj, name, location_in_parent_space, time_v
                 fcu.group = fcurve_group
                 for kp in fcu.keyframe_points:
                     kp.interpolation = 'BEZIER'
+                    kp.handle_left_type = "ALIGNED"
+                    kp.handle_right_type = "ALIGNED"
                 fcu.update()
             else:
                 print(f"MXT Error: Failed to create or find F-Curve for {data_path} on {cp_empty.name}")
@@ -1069,7 +1075,7 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
         props.is_mxt_road_segment_parent = True
 
         
-        bpy.ops.object.empty_add(type='PLAIN_AXES', radius=1.0, location=(0,0,0))
+        bpy.ops.object.empty_add(type='PLAIN_AXES', radius=0.0, location=(0,0,0))
         helper = context.active_object
         helper.name = f"{seg_par.name}_CurveMatrixHelper"
         helper.parent = seg_par
@@ -1121,7 +1127,7 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
                 if not f_e_prev:
                     continue
 
-                bpy.ops.object.empty_add(type='SPHERE', radius=10, location=seg_par.location)
+                bpy.ops.object.empty_add(type='SPHERE', radius=0, location=seg_par.location)
                 helper_new = bpy.context.active_object
                 helper_new.name = f"{seg_par.name}_Mod_{len(props.modulations):02d}"
                 helper_new.parent = seg_par
@@ -1163,6 +1169,8 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
                 if f_e_new:
                     for kp in f_e_new.keyframe_points:
                         kp.interpolation = 'BEZIER'
+                        kp.handle_left_type = "LINEAR_X"
+                        kp.handle_right_type = "LINEAR_X"
                     _linearize_fcurve_handles_smooth(f_e_new)
                 
 
@@ -1188,7 +1196,7 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
                 tx_right_end = f_right.evaluate(100.0)
 
                 
-                bpy.ops.object.empty_add(type='SPHERE', radius=10, location=seg_par.location)
+                bpy.ops.object.empty_add(type='SPHERE', radius=0, location=seg_par.location)
                 helper_new = bpy.context.active_object
                 helper_new.name = f"{seg_par.name}_Embed_{len(props.embeds):02d}"
                 helper_new.parent = seg_par
@@ -1214,6 +1222,8 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
                     if fcu:
                         for kp in fcu.keyframe_points:
                             kp.interpolation = 'BEZIER'
+                            kp.handle_left_type = "LINEAR_X"
+                            kp.handle_right_type = "LINEAR_X"
                         _linearize_fcurve_handles_smooth(fcu)
                 
 
@@ -1795,6 +1805,8 @@ class MXTRoad_PT_MainPanel(Panel):
 def _add_key(fcu, frame, value):
     kp = fcu.keyframe_points.insert(frame, value, options={'FAST'})
     kp.interpolation = 'BEZIER'
+    kp.handle_left_type = "LINEAR_X"
+    kp.handle_right_type = "LINEAR_X"
     return kp
 
 class MXTRoad_OT_GenerateCurveMatrix(Operator):
@@ -1967,8 +1979,8 @@ class MXTRoad_OT_GenerateCurveMatrix(Operator):
             rot_ease = angle_t / total_angle if total_angle != 0.0 else 0.0
             fcu_rot.keyframe_points.insert(frame, rot_ease)
             fcu_scl.keyframe_points.insert(frame, scl_ease)
-        for kp in fcu_rot.keyframe_points: kp.interpolation = 'LINEAR'
-        for kp in fcu_scl.keyframe_points: kp.interpolation = 'LINEAR'
+        _linearize_fcurve_handles_smooth(fcu_rot)
+        _linearize_fcurve_handles_smooth(fcu_scl)
     @staticmethod
     def bake_for_parent_line(road_parent, *, report_fn=None):
         props = road_parent.mxt_road_overall_props
