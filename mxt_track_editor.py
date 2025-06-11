@@ -1089,6 +1089,48 @@ def _create_cp_empty(context, parent_obj, name, location_in_parent_space, time_v
     context.view_layer.objects.active = parent_obj
     return cp_empty
 
+class MXT_GGT_CPHandleGizmos(bpy.types.GizmoGroup):
+    bl_idname = "MXT_GGT_cp_handle_gizmos"
+    bl_label = "MXT CP Handle Gizmos"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'WINDOW'
+    bl_options = {'3D', 'PERSISTENT'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (obj and obj.mode == 'OBJECT' and
+                getattr(obj, "mxt_cp_data", None) and
+                obj.mxt_cp_data.is_mxt_control_point)
+
+    def setup(self, context):
+        gz = self.gizmos.new("GIZMO_GT_arrow_3d")
+        gz.use_draw_scale = True
+        gz.color = 1.0, 0.6, 0.2
+        gz.alpha = 0.8
+        self.handle_out = gz
+
+        gz = self.gizmos.new("GIZMO_GT_arrow_3d")
+        gz.use_draw_scale = True
+        gz.color = 0.2, 0.6, 1.0
+        gz.alpha = 0.8
+        self.handle_in = gz
+
+    def draw_prepare(self, context):
+        obj = context.active_object
+        cp = obj.mxt_cp_data
+        mat = obj.matrix_world
+
+        rot_to_z = Matrix.Rotation(math.radians(-90.0), 4, 'X')
+
+        self.handle_out.matrix_basis = mat @ rot_to_z
+        self.handle_out.target_set_prop("offset", cp, "handle_out_length")
+        self.handle_out.length = cp.handle_out_length
+
+        self.handle_in.matrix_basis = mat @ rot_to_z @ Matrix.Rotation(math.pi, 4, 'Z')
+        self.handle_in.target_set_prop("offset", cp, "handle_in_length")
+        self.handle_in.length = cp.handle_in_length
+
 def _delete_road_segment(parent_obj):
     if not parent_obj:
         return
@@ -1668,44 +1710,6 @@ def mxt_draw_callback():
                     batch.draw(shader)
         
     
-    all_handle_lines = []
-    all_handle_points = []
-
-    
-    for obj in bpy.context.selected_objects:
-        
-        if (obj and hasattr(obj, "mxt_cp_data") and obj.mxt_cp_data.is_mxt_control_point and obj.parent == parent):
-
-                cp_data = obj.mxt_cp_data
-                mat = obj.matrix_world
-                
-                center_pos = mat.translation
-                z_axis = mat.col[2].normalized()
-                z_axis = Vector((z_axis.x, z_axis.y, z_axis.z))
-                
-                
-                handle_out_pos = center_pos + z_axis * cp_data.handle_out_length
-                handle_in_pos = center_pos - z_axis * cp_data.handle_in_length
-                
-                
-                line_coords = [handle_in_pos, handle_out_pos]
-                point_coords = [handle_in_pos, handle_out_pos, center_pos]
-
-                shader.bind()
-                
-                
-                gpu.state.line_width_set(1.0)
-                shader.uniform_float("color", (0.7, 0.7, 1.0, 0.6)) 
-                batch_for_shader(shader, 'LINES', {"pos": line_coords}).draw(shader)
-                
-                
-                gpu.state.point_size_set(6)
-                shader.uniform_float("color", (0.8, 0.8, 1.0, 1.0)) 
-                batch_for_shader(shader, 'POINTS', {"pos": point_coords}).draw(shader)
-                
-                
-                gpu.state.point_size_set(1)
-                gpu.state.line_width_set(2.0) 
     gpu.state.line_width_set(1.0)
     gpu.state.blend_set('NONE')
 class MXTRoad_PT_MainPanel(Panel):
@@ -2990,6 +2994,7 @@ classes_to_register = (
     MXTRoad_OT_CreateRoadSegment,
     MXTRoad_OT_AddControlPoint,
     MXTRoad_OT_UpdatePathVisuals,
+    MXT_GGT_CPHandleGizmos,
     MXTRoad_PT_MainPanel,
     MXTRoad_OT_GenerateCurveMatrix,
     MXTRoad_OT_GenerateMesh,
