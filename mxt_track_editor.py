@@ -332,7 +332,7 @@ class MXTRoad_OT_AddEmbed(Operator):
             if fcu:
                 for kp in fcu.keyframe_points:
                     kp.interpolation = 'BEZIER'
-                _linearize_fcurve_handles(fcu)
+                _linearize_fcurve_handles_smooth(fcu)
 
         emb = props.embeds.add()
         emb.label = f"Embed {len(props.embeds)}"
@@ -394,7 +394,7 @@ class MXTRoad_OT_AddModulation(Operator):
             if fcu:
                 for kp in fcu.keyframe_points:
                     kp.interpolation = 'BEZIER'
-                _linearize_fcurve_handles(fcu)
+                _linearize_fcurve_handles_smooth(fcu)
 
         mod = props.modulations.add()
         mod.label = f"Mod {len(props.modulations)}"
@@ -579,7 +579,7 @@ class MXTRoad_OT_ConvertSegmentType(Operator):
                 start_point.mxt_line_handle_data[prop_name] = 1.0
                 start_point.keyframe_insert(data_path=f'mxt_line_handle_data.{prop_name}', frame=100.0)
                 fcu = action.fcurves.find(f'mxt_line_handle_data.{prop_name}')
-                if fcu: _linearize_fcurve_handles(fcu)
+                if fcu: _linearize_fcurve_handles_smooth(fcu)
 
         elif target_type == 'SPIRAL':
             
@@ -613,7 +613,7 @@ class MXTRoad_OT_ConvertSegmentType(Operator):
                 fcurve_helper.location[index] = end_val
                 fcurve_helper.keyframe_insert(data_path="location", index=index, frame=100)
                 fcu = act.fcurves.find("location", index=index)
-                if fcu: _linearize_fcurve_handles(fcu)
+                if fcu: _linearize_fcurve_handles_smooth(fcu)
 
             
             scl_defs = { 0: end_scl.x, 1: end_scl.y }
@@ -623,7 +623,7 @@ class MXTRoad_OT_ConvertSegmentType(Operator):
                 fcurve_helper.keyframe_insert(data_path="scale", index=index, frame=0)
                 fcurve_helper.keyframe_insert(data_path="scale", index=index, frame=100)
                 fcu = act.fcurves.find("scale", index=index)
-                if fcu: _linearize_fcurve_handles(fcu)
+                if fcu: _linearize_fcurve_handles_smooth(fcu)
         
         _bake_curve_matrix_direct(parent)
         return {'FINISHED'}
@@ -671,6 +671,40 @@ def get_mxt_control_point_empties(parent_obj, sorted_by_time=True):
         cps.sort(key=lambda cp_empty: cp_empty.mxt_cp_data.time if hasattr(cp_empty, "mxt_cp_data") else 0.0)
     return cps
 def _linearize_fcurve_handles(fcu: bpy.types.FCurve):
+    kps = fcu.keyframe_points
+    if len(kps) < 2:
+        return
+
+    for idx, kp in enumerate(kps):
+        # ensure handle type first so Blender doesn't reset lengths when changed
+        kp.handle_left_type = 'ALIGNED'
+        kp.handle_right_type = 'ALIGNED'
+
+        left_vec = kp.handle_left - kp.co
+        right_vec = kp.handle_right - kp.co
+
+        if idx > 0:
+            prev = kps[idx - 1]
+            dx_prev = kp.co.x - prev.co.x
+            target_dx = -dx_prev / 3.0
+            if abs(left_vec.x) > 1e-6:
+                scale = target_dx / left_vec.x
+                kp.handle_left = kp.co + left_vec * scale
+            else:
+                kp.handle_left.x = kp.co.x + target_dx
+
+        if idx < len(kps) - 1:
+            nxt = kps[idx + 1]
+            dx_next = nxt.co.x - kp.co.x
+            target_dx = dx_next / 3.0
+            if abs(right_vec.x) > 1e-6:
+                scale = target_dx / right_vec.x
+                kp.handle_right = kp.co + right_vec * scale
+            else:
+                kp.handle_right.x = kp.co.x + target_dx
+    fcu.update()
+
+def _linearize_fcurve_handles_smooth(fcu: bpy.types.FCurve):
     kps = fcu.keyframe_points
     if len(kps) < 2:
         return
@@ -851,7 +885,7 @@ def _process_live_updates():
                 fcu = action.fcurves.find("location", index=0)
                 if fcu:
                     fcu.keyframe_points[0].interpolation = fcu.keyframe_points[1].interpolation = 'CONSTANT'
-                    _linearize_fcurve_handles(fcu)
+                    _linearize_fcurve_handles_smooth(fcu)
                 parent.mxt_road_overall_props.openness_helper = helper_data
         
         while _cm_pending:
@@ -959,7 +993,7 @@ class MXTRoad_OT_LinearizeSelectedFCurves(Operator):
 
     def execute(self, context):
         for fcu in context.selected_editable_fcurves:
-            _linearize_fcurve_handles(fcu)
+            _linearize_fcurve_handles_smooth(fcu)
         self.report({'INFO'}, "Handles linearised")
         return {'FINISHED'}
 def _respace_cp_times(parent_obj):
@@ -1004,7 +1038,7 @@ def _create_cp_empty(context, parent_obj, name, location_in_parent_space, time_v
             cp_empty.keyframe_insert(data_path=data_path, frame=100.0)
             fcu = action.fcurves.find(data_path)
             if fcu:
-                _linearize_fcurve_handles(fcu)
+                _linearize_fcurve_handles_smooth(fcu)
                 fcu.group = fcurve_group
                 for kp in fcu.keyframe_points:
                     kp.interpolation = 'BEZIER'
@@ -1012,7 +1046,7 @@ def _create_cp_empty(context, parent_obj, name, location_in_parent_space, time_v
             else:
                 print(f"MXT Error: Failed to create or find F-Curve for {data_path} on {cp_empty.name}")
         else:
-            _linearize_fcurve_handles(fcu)
+            _linearize_fcurve_handles_smooth(fcu)
             if not fcu.group or fcu.group.name != easing_group_name:
                 fcu.group = fcurve_group
     context.view_layer.objects.active = parent_obj
@@ -1129,7 +1163,7 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
                 if f_e_new:
                     for kp in f_e_new.keyframe_points:
                         kp.interpolation = 'BEZIER'
-                    _linearize_fcurve_handles(f_e_new)
+                    _linearize_fcurve_handles_smooth(f_e_new)
                 
 
                 mod_new = props.modulations.add()
@@ -1180,7 +1214,7 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
                     if fcu:
                         for kp in fcu.keyframe_points:
                             kp.interpolation = 'BEZIER'
-                        _linearize_fcurve_handles(fcu)
+                        _linearize_fcurve_handles_smooth(fcu)
                 
 
                 
@@ -1904,7 +1938,7 @@ class MXTRoad_OT_GenerateCurveMatrix(Operator):
         for fc in act.fcurves:
             for kp in fc.keyframe_points:
                 kp.interpolation = 'BEZIER'
-            _linearize_fcurve_handles(fc)
+            _linearize_fcurve_handles_smooth(fc)
             fc.update()
         if isinstance(MXTRoad_OT_GenerateCurveMatrix, Operator):
             if report_fn: report_fn({'INFO'}, f"Baked {len(t_samples)} keys with full orientation logic.")
@@ -2002,7 +2036,7 @@ class MXTRoad_OT_GenerateCurveMatrix(Operator):
             _add_key(curves[("scale",2)], frame, scl.z)
 
         for fc in curves.values():
-            _linearize_fcurve_handles(fc)
+            _linearize_fcurve_handles_smooth(fc)
             fc.update()
 
         if report_fn: report_fn({'INFO'}, f"Baked Eased Line segment with {len(t_samples)} keys.")
@@ -2148,7 +2182,7 @@ class MXTRoad_OT_GenerateCurveMatrix(Operator):
             _add_key(curves[("scale", 2)], fr, scl.z)
 
         for fcu in curves.values():
-            _linearize_fcurve_handles(fcu)
+            _linearize_fcurve_handles_smooth(fcu)
             fcu.update()
 
         if report_fn:
