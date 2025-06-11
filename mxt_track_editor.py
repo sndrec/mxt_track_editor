@@ -47,6 +47,10 @@ def _no_undo():
     finally:
         if orig:
             prefs.use_global_undo = True
+
+def _disallow_deletion(obj):
+    if obj and hasattr(obj, "can_user_delete"):
+        obj.can_user_delete = False
 ROAD_SHAPE_TYPE_ITEMS = [
     ('FLAT', "Flat", "Flat Road Segment"),
     ('CYLINDER', "Cylinder", "Cylindrical Shape (exterior"),
@@ -320,6 +324,7 @@ class MXTRoad_OT_AddEmbed(Operator):
 
         bpy.ops.object.empty_add(type='SPHERE', radius=0, location=seg.location)
         helper = ctx.active_object
+        _disallow_deletion(helper)
         helper.name = f"{seg.name}_Embed_{len(props.embeds):02d}"
         helper.parent = seg
 
@@ -377,6 +382,7 @@ class MXTRoad_OT_AddModulation(Operator):
         
         bpy.ops.object.empty_add(type='SPHERE', radius=0, location=seg.location)
         helper = context.active_object
+        _disallow_deletion(helper)
         helper.name = f"{seg.name}_Mod_{len(props.modulations):02d}"
         helper.parent = seg
 
@@ -567,11 +573,13 @@ class MXTRoad_OT_ConvertSegmentType(Operator):
             print("yay line")
             print(start_loc)
             start_point = bpy.data.objects.new(f"{parent.name}.LineStart", None)
+            _disallow_deletion(start_point)
             start_point.empty_display_type, start_point.empty_display_size = 'CUBE', 1
             start_point.matrix_world = Matrix.Translation(start_loc) @ start_rot.to_matrix().to_4x4() @ Matrix.Diagonal((*start_scl, 1.0))
             context.collection.objects.link(start_point)
             start_point.parent, start_point.rotation_mode = parent, 'QUATERNION'
             end_point = bpy.data.objects.new(f"{parent.name}.LineEnd", None)
+            _disallow_deletion(end_point)
             end_point.empty_display_type, end_point.empty_display_size = 'CUBE', 1
             end_point.matrix_world = Matrix.Translation(end_loc) @ end_rot.to_matrix().to_4x4() @ Matrix.Diagonal((*end_scl, 1.0))
             context.collection.objects.link(end_point)
@@ -593,6 +601,7 @@ class MXTRoad_OT_ConvertSegmentType(Operator):
         elif target_type == 'SPIRAL':
             
             axis_helper = bpy.data.objects.new(f"{parent.name}.SpiralAxisHelper", None)
+            _disallow_deletion(axis_helper)
             axis_helper.empty_display_type = 'ARROWS'
             axis_helper.empty_display_size = start_scl.x
             
@@ -603,6 +612,7 @@ class MXTRoad_OT_ConvertSegmentType(Operator):
 
             
             fcurve_helper = bpy.data.objects.new(f"{parent.name}.SpiralHelper", None)
+            _disallow_deletion(fcurve_helper)
             fcurve_helper.empty_display_type = 'SPHERE'
             fcurve_helper.empty_display_size = 0
             context.collection.objects.link(fcurve_helper)
@@ -881,6 +891,7 @@ def _process_live_updates():
             parent = bpy.data.objects.get(name)
             if parent and not parent.mxt_road_overall_props.openness_helper:
                 helper_data = bpy.data.objects.new(f"{parent.name}_OpennessHelper", None)
+                _disallow_deletion(helper_data)
                 helper_data.empty_display_type, helper_data.empty_display_size = 'SPHERE', 0
                 parent.users_collection[0].objects.link(helper_data)
                 helper_data.parent, helper_data.location = parent, parent.location
@@ -1110,6 +1121,7 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
         bpy.ops.object.empty_add(type='PLAIN_AXES', radius=1.0,
                                  location=context.scene.cursor.location)
         seg_par = context.active_object
+        _disallow_deletion(seg_par)
         seg_par.name = "MXTRoadSegment.%03d" % len(
             [o for o in bpy.data.objects if o.name.startswith("MXTRoadSegment")])
         props = seg_par.mxt_road_overall_props
@@ -1118,6 +1130,7 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
         
         bpy.ops.object.empty_add(type='PLAIN_AXES', radius=0.0, location=(0,0,0))
         helper = context.active_object
+        _disallow_deletion(helper)
         helper.name = f"{seg_par.name}_CurveMatrixHelper"
         helper.parent = seg_par
         helper.hide_set(True)
@@ -1170,6 +1183,7 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
 
                 bpy.ops.object.empty_add(type='SPHERE', radius=0, location=seg_par.location)
                 helper_new = bpy.context.active_object
+                _disallow_deletion(helper_new)
                 helper_new.name = f"{seg_par.name}_Mod_{len(props.modulations):02d}"
                 helper_new.parent = seg_par
                 
@@ -1239,6 +1253,7 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
                 
                 bpy.ops.object.empty_add(type='SPHERE', radius=0, location=seg_par.location)
                 helper_new = bpy.context.active_object
+                _disallow_deletion(helper_new)
                 helper_new.name = f"{seg_par.name}_Embed_{len(props.embeds):02d}"
                 helper_new.parent = seg_par
 
@@ -2751,6 +2766,7 @@ class MXTRoad_OT_GenerateMesh(Operator):
                     n_len = np.linalg.norm(N_grid, axis=2, keepdims=True); n_len[n_len == 0.0] = 1.0; N_grid /= n_len
                     base_verts, n_flat = P_grid.reshape(-1, 3), N_grid.reshape(-1, 3)
                     cutter_mesh = bpy.data.meshes.new(f"{embed.label}_cutter"); cutter_obj = bpy.data.objects.new(f"{embed.label}_cutter", cutter_mesh)
+                    _disallow_deletion(cutter_obj)
                     context.collection.objects.link(cutter_obj); hole_cutter_objects.append(cutter_obj)
                     bm = bmesh.new()
                     v_top = [bm.verts.new(tuple(v + n * TOP_OFFSET)) for v, n in zip(base_verts, n_flat)]
