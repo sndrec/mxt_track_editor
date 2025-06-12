@@ -47,6 +47,10 @@ def _no_undo():
     finally:
         if orig:
             prefs.use_global_undo = True
+
+def _disallow_deletion(obj):
+    if obj and hasattr(obj, "can_user_delete"):
+        obj.can_user_delete = False
 ROAD_SHAPE_TYPE_ITEMS = [
     ('FLAT', "Flat", "Flat Road Segment"),
     ('CYLINDER', "Cylinder", "Cylindrical Shape (exterior"),
@@ -296,6 +300,11 @@ class MXTRoad_RoadSegmentOverallProperties(PropertyGroup):
         type=bpy.types.Object,
         poll=lambda self, object: object.type == 'EMPTY'
     )
+    preview_mesh_exists: BoolProperty(
+        name="Preview Mesh Exists",
+        description="Internal flag tracking if this segment has a preview mesh",
+        default=False
+    )
 
 
 class MXT_UL_Embeds(bpy.types.UIList):
@@ -315,6 +324,7 @@ class MXTRoad_OT_AddEmbed(Operator):
 
         bpy.ops.object.empty_add(type='SPHERE', radius=0, location=seg.location)
         helper = ctx.active_object
+        _disallow_deletion(helper)
         helper.name = f"{seg.name}_Embed_{len(props.embeds):02d}"
         helper.parent = seg
 
@@ -372,6 +382,7 @@ class MXTRoad_OT_AddModulation(Operator):
         
         bpy.ops.object.empty_add(type='SPHERE', radius=0, location=seg.location)
         helper = context.active_object
+        _disallow_deletion(helper)
         helper.name = f"{seg.name}_Mod_{len(props.modulations):02d}"
         helper.parent = seg
 
@@ -562,11 +573,13 @@ class MXTRoad_OT_ConvertSegmentType(Operator):
             print("yay line")
             print(start_loc)
             start_point = bpy.data.objects.new(f"{parent.name}.LineStart", None)
+            _disallow_deletion(start_point)
             start_point.empty_display_type, start_point.empty_display_size = 'CUBE', 1
             start_point.matrix_world = Matrix.Translation(start_loc) @ start_rot.to_matrix().to_4x4() @ Matrix.Diagonal((*start_scl, 1.0))
             context.collection.objects.link(start_point)
             start_point.parent, start_point.rotation_mode = parent, 'QUATERNION'
             end_point = bpy.data.objects.new(f"{parent.name}.LineEnd", None)
+            _disallow_deletion(end_point)
             end_point.empty_display_type, end_point.empty_display_size = 'CUBE', 1
             end_point.matrix_world = Matrix.Translation(end_loc) @ end_rot.to_matrix().to_4x4() @ Matrix.Diagonal((*end_scl, 1.0))
             context.collection.objects.link(end_point)
@@ -588,6 +601,7 @@ class MXTRoad_OT_ConvertSegmentType(Operator):
         elif target_type == 'SPIRAL':
             
             axis_helper = bpy.data.objects.new(f"{parent.name}.SpiralAxisHelper", None)
+            _disallow_deletion(axis_helper)
             axis_helper.empty_display_type = 'ARROWS'
             axis_helper.empty_display_size = start_scl.x
             
@@ -598,6 +612,7 @@ class MXTRoad_OT_ConvertSegmentType(Operator):
 
             
             fcurve_helper = bpy.data.objects.new(f"{parent.name}.SpiralHelper", None)
+            _disallow_deletion(fcurve_helper)
             fcurve_helper.empty_display_type = 'SPHERE'
             fcurve_helper.empty_display_size = 0
             context.collection.objects.link(fcurve_helper)
@@ -876,6 +891,7 @@ def _process_live_updates():
             parent = bpy.data.objects.get(name)
             if parent and not parent.mxt_road_overall_props.openness_helper:
                 helper_data = bpy.data.objects.new(f"{parent.name}_OpennessHelper", None)
+                _disallow_deletion(helper_data)
                 helper_data.empty_display_type, helper_data.empty_display_size = 'SPHERE', 0
                 parent.users_collection[0].objects.link(helper_data)
                 helper_data.parent, helper_data.location = parent, parent.location
@@ -984,6 +1000,21 @@ def mxt_on_depsgraph_update(scene, depsgraph):
     
     for parent in parents_to_rebuild_mesh:
         schedule_mesh_build(parent)
+
+    # If a preview mesh was removed manually, delete the entire segment
+    parents_to_check = [obj for obj in bpy.data.objects
+                        if getattr(obj, "mxt_road_overall_props", None)
+                        and obj.mxt_road_overall_props.is_mxt_road_segment_parent]
+    for parent in parents_to_check:
+        props = parent.mxt_road_overall_props
+        mesh_name = f"{parent.name}_PreviewMesh"
+        mesh_exists = bpy.data.objects.get(mesh_name) is not None
+        if props.preview_mesh_exists:
+            if not mesh_exists:
+                _delete_road_segment(parent)
+        else:
+            if mesh_exists:
+                props.preview_mesh_exists = True
 class MXTRoad_OT_LinearizeSelectedFCurves(Operator):
     bl_idname = "mxt_road.linearize_selected_fcurves"
     bl_label  = "Enforce ⅓ Handles"
@@ -1057,6 +1088,105 @@ def _create_cp_empty(context, parent_obj, name, location_in_parent_space, time_v
                 fcu.group = fcurve_group
     context.view_layer.objects.active = parent_obj
     return cp_empty
+
+class MXT_OT_set_handle_length(bpy.types.Operator):
+    bl_idname = "mxt.set_handle_length"
+    bl_label = "Set CP Handle Length"
+    bl_options = {'REGISTER', 'UNDO_GROUPED'}
+    bl_undo_group  = "MXT_CP_HANDLE"
+
+    is_in:   bpy.props.BoolProperty()
+    length:  bpy.props.FloatProperty()
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj and getattr(obj, "mxt_cp_data", None) and obj.mxt_cp_data.is_mxt_control_point
+
+    def execute(self, context):
+        cp = context.active_object.mxt_cp_data
+        if self.is_in:
+            cp.handle_in_length  = self.length
+        else:
+            cp.handle_out_length = self.length
+        return {'FINISHED'}
+
+class MXT_GGT_CPHandleGizmos(bpy.types.GizmoGroup):
+    bl_idname = "MXT_GGT_cp_handle_gizmos"
+    bl_label = "MXT CP Handle Gizmos"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'WINDOW'
+    bl_options = {'3D', 'PERSISTENT'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (obj and obj.mode == 'OBJECT' and
+                getattr(obj, "mxt_cp_data", None) and
+                obj.mxt_cp_data.is_mxt_control_point)
+
+    def setup(self, context):
+        # --- OUT ---
+        gz = self.gizmos.new("GIZMO_GT_arrow_3d")
+        gz.use_draw_scale = gz.use_draw_offset_scale = False
+        gz.draw_style = 'BOX'
+        gz.color, gz.alpha = (1.0, .6, .2), .8
+        def get_out():
+            return context.active_object.mxt_cp_data.handle_out_length
+        def set_out(val):
+            # one grouped‑undo operator call per mouse‑move
+            bpy.ops.mxt.set_handle_length(True, is_in=False, length=val)
+        gz.target_set_handler("offset", get=get_out, set=set_out)
+        self.handle_out = gz
+
+        # --- IN ---
+        gz = self.gizmos.new("GIZMO_GT_arrow_3d")
+        gz.use_draw_scale = gz.use_draw_offset_scale = False
+        gz.draw_style = 'BOX'
+        gz.color, gz.alpha = (.2, .6, 1.0), .8
+        def get_in():
+            return context.active_object.mxt_cp_data.handle_in_length
+        def set_in(val):
+            bpy.ops.mxt.set_handle_length(True, is_in=True, length=val)
+        gz.target_set_handler("offset", get=get_in, set=set_in)
+        self.handle_in = gz
+
+    def draw_prepare(self, ctx):
+        obj, cp = ctx.active_object, ctx.active_object.mxt_cp_data
+        loc, rot, _ = obj.matrix_world.decompose()
+        use_mat  = Matrix.LocRotScale(loc, rot, Vector((obj.scale[0],)*3))
+        scale_inv = 1.0 / obj.scale[0]
+
+        # OUT
+        self.handle_out.matrix_basis = use_mat
+        self.handle_out.length       = cp.handle_out_length * scale_inv
+        self.handle_out.matrix_offset = Matrix.Translation((0,0,-cp.handle_out_length))
+
+        # IN
+        self.handle_in.matrix_basis  = use_mat @ Matrix.Rotation(math.pi, 4, 'Y')
+        self.handle_in.length        = cp.handle_in_length * scale_inv
+        self.handle_in.matrix_offset = Matrix.Translation((0,0,-cp.handle_in_length))
+
+def _delete_road_segment(parent_obj):
+    if not parent_obj:
+        return
+
+    # Remove all child objects and their actions
+    for child in list(parent_obj.children):
+        if child.animation_data and child.animation_data.action and child.animation_data.action.users <= 1:
+            bpy.data.actions.remove(child.animation_data.action)
+        bpy.data.objects.remove(child, do_unlink=True)
+
+    if parent_obj.animation_data and parent_obj.animation_data.action and parent_obj.animation_data.action.users <= 1:
+        bpy.data.actions.remove(parent_obj.animation_data.action)
+
+    _cm_pending.discard(parent_obj.name)
+    _mesh_pending.discard(parent_obj.name)
+    _openness_helper_to_create.discard(parent_obj.name)
+    _openness_helper_to_destroy.discard(parent_obj.name)
+    mxt_roads_pending_visual_update.discard(parent_obj.name)
+
+    bpy.data.objects.remove(parent_obj, do_unlink=True)
 class MXTRoad_OT_CreateRoadSegment(Operator):
     bl_idname = "mxt_road.create_segment_empties"
     bl_label  = "New Road Segment (Empties)"
@@ -1069,6 +1199,7 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
         bpy.ops.object.empty_add(type='PLAIN_AXES', radius=1.0,
                                  location=context.scene.cursor.location)
         seg_par = context.active_object
+        _disallow_deletion(seg_par)
         seg_par.name = "MXTRoadSegment.%03d" % len(
             [o for o in bpy.data.objects if o.name.startswith("MXTRoadSegment")])
         props = seg_par.mxt_road_overall_props
@@ -1077,6 +1208,7 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
         
         bpy.ops.object.empty_add(type='PLAIN_AXES', radius=0.0, location=(0,0,0))
         helper = context.active_object
+        _disallow_deletion(helper)
         helper.name = f"{seg_par.name}_CurveMatrixHelper"
         helper.parent = seg_par
         helper.hide_set(True)
@@ -1129,6 +1261,7 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
 
                 bpy.ops.object.empty_add(type='SPHERE', radius=0, location=seg_par.location)
                 helper_new = bpy.context.active_object
+                _disallow_deletion(helper_new)
                 helper_new.name = f"{seg_par.name}_Mod_{len(props.modulations):02d}"
                 helper_new.parent = seg_par
                 
@@ -1198,6 +1331,7 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
                 
                 bpy.ops.object.empty_add(type='SPHERE', radius=0, location=seg_par.location)
                 helper_new = bpy.context.active_object
+                _disallow_deletion(helper_new)
                 helper_new.name = f"{seg_par.name}_Embed_{len(props.embeds):02d}"
                 helper_new.parent = seg_par
 
@@ -1612,44 +1746,6 @@ def mxt_draw_callback():
                     batch.draw(shader)
         
     
-    all_handle_lines = []
-    all_handle_points = []
-
-    
-    for obj in bpy.context.selected_objects:
-        
-        if (obj and hasattr(obj, "mxt_cp_data") and obj.mxt_cp_data.is_mxt_control_point and obj.parent == parent):
-
-                cp_data = obj.mxt_cp_data
-                mat = obj.matrix_world
-                
-                center_pos = mat.translation
-                z_axis = mat.col[2].normalized()
-                z_axis = Vector((z_axis.x, z_axis.y, z_axis.z))
-                
-                
-                handle_out_pos = center_pos + z_axis * cp_data.handle_out_length
-                handle_in_pos = center_pos - z_axis * cp_data.handle_in_length
-                
-                
-                line_coords = [handle_in_pos, handle_out_pos]
-                point_coords = [handle_in_pos, handle_out_pos, center_pos]
-
-                shader.bind()
-                
-                
-                gpu.state.line_width_set(1.0)
-                shader.uniform_float("color", (0.7, 0.7, 1.0, 0.6)) 
-                batch_for_shader(shader, 'LINES', {"pos": line_coords}).draw(shader)
-                
-                
-                gpu.state.point_size_set(6)
-                shader.uniform_float("color", (0.8, 0.8, 1.0, 1.0)) 
-                batch_for_shader(shader, 'POINTS', {"pos": point_coords}).draw(shader)
-                
-                
-                gpu.state.point_size_set(1)
-                gpu.state.line_width_set(2.0) 
     gpu.state.line_width_set(1.0)
     gpu.state.blend_set('NONE')
 class MXTRoad_PT_MainPanel(Panel):
@@ -2579,6 +2675,7 @@ class MXTRoad_OT_GenerateMesh(Operator):
             mesh_obj = bpy.data.objects.new(mesh_name, mesh_data)
             mesh_obj.parent = road_parent
             context.collection.objects.link(mesh_obj)
+        props.preview_mesh_exists = True
         
         mesh_obj.data.materials.clear()
         material_map = {}
@@ -2709,6 +2806,7 @@ class MXTRoad_OT_GenerateMesh(Operator):
                     n_len = np.linalg.norm(N_grid, axis=2, keepdims=True); n_len[n_len == 0.0] = 1.0; N_grid /= n_len
                     base_verts, n_flat = P_grid.reshape(-1, 3), N_grid.reshape(-1, 3)
                     cutter_mesh = bpy.data.meshes.new(f"{embed.label}_cutter"); cutter_obj = bpy.data.objects.new(f"{embed.label}_cutter", cutter_mesh)
+                    _disallow_deletion(cutter_obj)
                     context.collection.objects.link(cutter_obj); hole_cutter_objects.append(cutter_obj)
                     bm = bmesh.new()
                     v_top = [bm.verts.new(tuple(v + n * TOP_OFFSET)) for v, n in zip(base_verts, n_flat)]
@@ -2932,6 +3030,8 @@ classes_to_register = (
     MXTRoad_OT_CreateRoadSegment,
     MXTRoad_OT_AddControlPoint,
     MXTRoad_OT_UpdatePathVisuals,
+    MXT_OT_set_handle_length,
+    MXT_GGT_CPHandleGizmos,
     MXTRoad_PT_MainPanel,
     MXTRoad_OT_GenerateCurveMatrix,
     MXTRoad_OT_GenerateMesh,
