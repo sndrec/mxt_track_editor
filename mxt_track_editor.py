@@ -139,6 +139,22 @@ class MXTRoad_LineHandleData(PropertyGroup):
     )
 
 
+class MXTSegmentRef(PropertyGroup):
+    segment: PointerProperty(
+        name="Segment",
+        type=bpy.types.Object,
+        poll=lambda self, obj: obj.type == 'EMPTY'
+    )
+
+
+class MXTTrackSettings(PropertyGroup):
+    first_segment: PointerProperty(
+        name="First Segment",
+        type=bpy.types.Object,
+        poll=lambda self, obj: obj.type == 'EMPTY'
+    )
+
+
 def mxt_segment_type_update(self, context):
     if get_active_mxt_road_segment_parent(context):
         
@@ -305,6 +321,10 @@ class MXTRoad_RoadSegmentOverallProperties(PropertyGroup):
         description="Internal flag tracking if this segment has a preview mesh",
         default=False
     )
+    prev_segments: CollectionProperty(type=MXTSegmentRef)
+    next_segments: CollectionProperty(type=MXTSegmentRef)
+    active_prev_seg_idx: IntProperty(default=0)
+    active_next_seg_idx: IntProperty(default=0)
 
 
 class MXT_UL_Embeds(bpy.types.UIList):
@@ -369,6 +389,62 @@ class MXTRoad_OT_RemoveEmbed(Operator):
             bpy.data.objects.remove(emb.helper, do_unlink=True)
         props.embeds.remove(idx)
         props.active_embed_idx = min(max(0, idx-1), len(props.embeds)-1)
+        return {'FINISHED'}
+
+class MXT_UL_SegmentRefs(bpy.types.UIList):
+    def draw_item(self, ctx, layout, data, item, icon, active_data, active_propname, index):
+        layout.prop(item, "segment", text="", emboss=False, icon='EMPTY_AXIS')
+
+class MXTRoad_OT_AddPrevSegment(Operator):
+    bl_idname = "mxt_road.add_prev_segment"; bl_label = "Add Prev Segment"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, ctx):
+        seg = get_active_mxt_road_segment_parent(ctx)
+        if not seg: return {'CANCELLED'}
+        props = seg.mxt_road_overall_props
+        props.prev_segments.add()
+        props.active_prev_seg_idx = len(props.prev_segments) - 1
+        return {'FINISHED'}
+
+class MXTRoad_OT_RemovePrevSegment(Operator):
+    bl_idname = "mxt_road.remove_prev_segment"; bl_label = "Remove Prev Segment"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, ctx):
+        seg = get_active_mxt_road_segment_parent(ctx)
+        props = seg.mxt_road_overall_props
+        idx = props.active_prev_seg_idx
+        if idx < 0 or idx >= len(props.prev_segments):
+            return {'CANCELLED'}
+        props.prev_segments.remove(idx)
+        props.active_prev_seg_idx = min(max(0, idx-1), len(props.prev_segments)-1)
+        return {'FINISHED'}
+
+class MXTRoad_OT_AddNextSegment(Operator):
+    bl_idname = "mxt_road.add_next_segment"; bl_label = "Add Next Segment"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, ctx):
+        seg = get_active_mxt_road_segment_parent(ctx)
+        if not seg: return {'CANCELLED'}
+        props = seg.mxt_road_overall_props
+        props.next_segments.add()
+        props.active_next_seg_idx = len(props.next_segments) - 1
+        return {'FINISHED'}
+
+class MXTRoad_OT_RemoveNextSegment(Operator):
+    bl_idname = "mxt_road.remove_next_segment"; bl_label = "Remove Next Segment"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, ctx):
+        seg = get_active_mxt_road_segment_parent(ctx)
+        props = seg.mxt_road_overall_props
+        idx = props.active_next_seg_idx
+        if idx < 0 or idx >= len(props.next_segments):
+            return {'CANCELLED'}
+        props.next_segments.remove(idx)
+        props.active_next_seg_idx = min(max(0, idx-1), len(props.next_segments)-1)
         return {'FINISHED'}
 
 class MXTRoad_OT_AddModulation(Operator):
@@ -1204,6 +1280,9 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
             [o for o in bpy.data.objects if o.name.startswith("MXTRoadSegment")])
         props = seg_par.mxt_road_overall_props
         props.is_mxt_road_segment_parent = True
+        ts = context.scene.mxt_track_settings
+        if ts and not ts.first_segment:
+            ts.first_segment = seg_par
 
         
         bpy.ops.object.empty_add(type='PLAIN_AXES', radius=0.0, location=(0,0,0))
@@ -1771,7 +1850,11 @@ class MXTRoad_PT_MainPanel(Panel):
 
     def draw(self, context):
         layout = self.layout; obj = context.active_object
-        layout.operator(MXTRoad_OT_CreateRoadSegment.bl_idname); layout.separator()
+        layout.operator(MXTRoad_OT_CreateRoadSegment.bl_idname)
+        ts = context.scene.mxt_track_settings
+        if ts:
+            layout.prop(ts, "first_segment")
+        layout.separator()
 
         active_road_parent = get_active_mxt_road_segment_parent(context)
         if not active_road_parent:
@@ -1795,6 +1878,22 @@ class MXTRoad_PT_MainPanel(Panel):
         
         
         parent_box.prop(road_props, "segment_type")
+        conn_box = parent_box.box()
+        conn_box.label(text="Connections:")
+        row = conn_box.row()
+        row.label(text="Previous")
+        col = row.column(align=True)
+        col.template_list("MXT_UL_SegmentRefs", "", road_props, "prev_segments", road_props, "active_prev_seg_idx", rows=2)
+        buttons = col.column(align=True)
+        buttons.operator("mxt_road.add_prev_segment", icon='ADD', text="")
+        buttons.operator("mxt_road.remove_prev_segment", icon='REMOVE', text="")
+        row = conn_box.row()
+        row.label(text="Next")
+        col = row.column(align=True)
+        col.template_list("MXT_UL_SegmentRefs", "", road_props, "next_segments", road_props, "active_next_seg_idx", rows=2)
+        buttons = col.column(align=True)
+        buttons.operator("mxt_road.add_next_segment", icon='ADD', text="")
+        buttons.operator("mxt_road.remove_next_segment", icon='REMOVE', text="")
         parent_box.separator()
 
         
@@ -3012,6 +3111,13 @@ class MXTRoad_OT_ExportTrackStub(Operator):
     def execute(self,c):
         self.report({'INFO'},"NYI"); return {'CANCELLED'}
 classes_to_register = (
+    MXTSegmentRef,
+    MXTTrackSettings,
+    MXT_UL_SegmentRefs,
+    MXTRoad_OT_AddPrevSegment,
+    MXTRoad_OT_RemovePrevSegment,
+    MXTRoad_OT_AddNextSegment,
+    MXTRoad_OT_RemoveNextSegment,
     MXTModulation,
     MXTEmbed,
     MXT_UL_Embeds,
@@ -3047,6 +3153,7 @@ def register():
     bpy.types.Object.mxt_road_overall_props = PointerProperty(type=MXTRoad_RoadSegmentOverallProperties)
     bpy.types.Object.mxt_cp_data = PointerProperty(type=MXTRoad_ControlPointData)
     bpy.types.Object.mxt_line_handle_data = PointerProperty(type=MXTRoad_LineHandleData)
+    bpy.types.Scene.mxt_track_settings = PointerProperty(type=MXTTrackSettings)
     handlers = bpy.app.handlers.depsgraph_update_post
     if mxt_on_depsgraph_update not in handlers: handlers.append(mxt_on_depsgraph_update)
     global _mxt_draw_handle
@@ -3075,6 +3182,7 @@ def unregister():
     if hasattr(bpy.types.Object, "mxt_cp_data"): del bpy.types.Object.mxt_cp_data
     if hasattr(bpy.types.Object, "mxt_line_handle_data"): del bpy.types.Object.mxt_line_handle_data
     if hasattr(bpy.types.Object, "mxt_road_overall_props"): del bpy.types.Object.mxt_road_overall_props
+    if hasattr(bpy.types.Scene, "mxt_track_settings"): del bpy.types.Scene.mxt_track_settings
     for cls in reversed(classes_to_register): bpy.utils.unregister_class(cls)
     print("MXT Road Creator (v0.1.0) Unregistered")
 if __name__ == "__main__":
