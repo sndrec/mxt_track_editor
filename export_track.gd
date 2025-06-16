@@ -3,7 +3,6 @@ extends EditorScript
 
 const track_filename := "test_track"
 
-# Called when the script is executed (using File -> Run in Script Editor).
 func _run() -> void:
 	var track_root : TrackRoot
 	var scene_root := FZGlobalTrackEditor.track_editor.get_tree().edited_scene_root
@@ -19,9 +18,6 @@ func _run() -> void:
 	var checkpoints := track_root.checkpoints
 	var segments := track_root.get_children()
 	
-	# create data first, then create the header and put it at the top
-	# this lets us more easily get offsets to specific data sections
-	
 	var data := StreamPeerBufferExtension.new()
 	data.resize(1024 * 1024 * 16)
 	
@@ -30,8 +26,8 @@ func _run() -> void:
 		var cur_cp := checkpoints[i]
 		data.put_checkpoint(cur_cp)
 		# replace this with proper checkpoint references
-		# once i implement proper concurrent track segments
-		# in the editor
+		# utilizing the prev/next segment tables
+		# this is just a placeholder
 		if i == 0:
 			data.put_u32(1)
 			data.put_u32(i + 1)
@@ -43,7 +39,6 @@ func _run() -> void:
 			data.put_u32(i + 1)
 			data.put_u32(i - 1)
 	
-	# segments are a little more complex
 	for i in segments.size():
 		var segment : RoadPath = segments[i]
 		data.put_u32(i)
@@ -93,6 +88,8 @@ func _run() -> void:
 		data.put_curve(segment.road_curve.scale_x)
 		data.put_curve(segment.road_curve.scale_y)
 		data.put_curve(segment.road_curve.scale_z)
+		data.put_curve(segment.rail_height_left)
+		data.put_curve(segment.rail_height_right)
 	data.resize(data.get_position())
 	
 	var header := StreamPeerBuffer.new()
@@ -112,3 +109,86 @@ func _run() -> void:
 	var save = FileAccess.open("user://" + track_filename + ".mxt_track", FileAccess.WRITE)
 	save.store_buffer(final_data.data_array)
 	print("saved track")
+
+class_name StreamPeerBufferExtension extends StreamPeerBuffer
+
+func get_vector3() -> Vector3:
+	return Vector3(get_float(), get_float(), get_float())
+
+func put_vector3(inVector : Vector3) -> void:
+	put_float(inVector.x)
+	put_float(inVector.y)
+	put_float(inVector.z)
+
+func put_quaternion(in_quat : Quaternion) -> void:
+	put_float(in_quat.x)
+	put_float(in_quat.y)
+	put_float(in_quat.z)
+	put_float(in_quat.w)
+
+func get_basis() -> Basis:
+	return Basis(get_vector3(), get_vector3(), get_vector3())
+
+func put_basis(inBasis : Basis) -> void:
+	put_vector3(inBasis.x)
+	put_vector3(inBasis.y)
+	put_vector3(inBasis.z)
+
+func get_transform() -> Transform3D:
+	return Transform3D(get_basis(), get_vector3())
+
+func put_transform(inTransform : Transform3D) -> void:
+	put_basis(inTransform.basis)
+	put_vector3(inTransform.origin)
+
+func put_curve(in_curve : Curve) -> void:
+	put_u32(in_curve.point_count)
+	for v in in_curve.point_count:
+		put_float(in_curve.get_point_position(v).x)
+		put_float(in_curve.get_point_position(v).y)
+		put_float(in_curve.get_point_left_tangent(v))
+		put_float(in_curve.get_point_right_tangent(v))
+
+func get_curve() -> Curve:
+	var new_curve := Curve.new()
+	var point_count := get_u32()
+	for i in point_count:
+		new_curve.add_point(Vector2(get_float(), get_float()), get_float(), get_float())
+	return new_curve
+
+func put_checkpoint(in_checkpoint : Checkpoint) -> void:
+	put_vector3(in_checkpoint.position_start)
+	put_vector3(in_checkpoint.position_end)
+	put_basis(in_checkpoint.orientation_start)
+	put_basis(in_checkpoint.orientation_end)
+	put_float(in_checkpoint.x_radius_start)
+	put_float(in_checkpoint.y_radius_start)
+	put_float(in_checkpoint.x_radius_end)
+	put_float(in_checkpoint.y_radius_end)
+	put_float(in_checkpoint.y_start)
+	put_float(in_checkpoint.y_end)
+	put_float(in_checkpoint.distance)
+	put_u32(in_checkpoint.road_segment)
+	put_vector3(in_checkpoint.start_plane.normal)
+	put_float(in_checkpoint.start_plane.d)
+	put_vector3(in_checkpoint.end_plane.normal)
+	put_float(in_checkpoint.end_plane.d)
+
+func get_checkpoint() -> Checkpoint:
+	var new_checkpoint := Checkpoint.new()
+	new_checkpoint.position_start = get_vector3()
+	new_checkpoint.position_end = get_vector3()
+	new_checkpoint.orientation_start = get_basis()
+	new_checkpoint.orientation_end = get_basis()
+	new_checkpoint.x_radius_start = get_float()
+	new_checkpoint.y_radius_start = get_float()
+	new_checkpoint.x_radius_end = get_float()
+	new_checkpoint.y_radius_end = get_float()
+	new_checkpoint.y_start = get_float()
+	new_checkpoint.y_end = get_float()
+	new_checkpoint.distance = get_float()
+	new_checkpoint.road_segment = get_u32()
+	new_checkpoint.start_plane = Plane(get_vector3(), get_float())
+	new_checkpoint.end_plane = Plane(get_vector3(), get_float())
+	return new_checkpoint
+	
