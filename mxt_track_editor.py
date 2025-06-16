@@ -139,11 +139,38 @@ class MXTRoad_LineHandleData(PropertyGroup):
     )
 
 
+def mxt_segment_ref_update(self, context):
+    obj = self.segment
+    if not obj:
+        return
+    # Allow selecting a PreviewMesh and automatically use its parent segment
+    if obj.type == 'MESH' and obj.name.endswith('_PreviewMesh') and obj.parent:
+        parent = obj.parent
+        if getattr(parent, "mxt_road_overall_props", None) and \
+                parent.mxt_road_overall_props.is_mxt_road_segment_parent:
+            if self.segment != parent:
+                self.segment = parent
+        else:
+            self.segment = None
+    elif not (getattr(obj, "mxt_road_overall_props", None) and \
+              obj.mxt_road_overall_props.is_mxt_road_segment_parent):
+        parent = obj.parent
+        if parent and getattr(parent, "mxt_road_overall_props", None) and \
+                parent.mxt_road_overall_props.is_mxt_road_segment_parent:
+            self.segment = parent
+        else:
+            self.segment = None
+
+
 class MXTSegmentRef(PropertyGroup):
     segment: PointerProperty(
         name="Segment",
         type=bpy.types.Object,
-        poll=lambda self, obj: obj.type == 'EMPTY'
+        poll=lambda self, obj: ((obj.type == 'EMPTY' and \
+            getattr(obj, "mxt_road_overall_props", None) and \
+            obj.mxt_road_overall_props.is_mxt_road_segment_parent) or \
+            (obj.type == 'MESH' and obj.name.endswith('_PreviewMesh'))),
+        update=mxt_segment_ref_update
     )
 
 
