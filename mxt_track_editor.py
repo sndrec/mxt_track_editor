@@ -2022,7 +2022,7 @@ class MXTRoad_PT_MainPanel(Panel):
         data_box.operator("mxt_road.generate_curve_matrix", text="Generate CurveMatrix", icon='FCURVE')
         data_box.operator("mxt_road.generate_mesh", text="Generate/Update Mesh", icon='MESH_PLANE')
         data_box.operator("mxt_road.generate_checkpoints", text="Generate Checkpoints", icon='OUTLINER_OB_EMPTY')
-        data_box.operator("mxt_road.export_track_stub", text="Export Track", icon='EXPORT')
+        data_box.operator("mxt_road.export_track", text="Export Track", icon='EXPORT')
 
 def _add_key(fcu, frame, value):
     kp = fcu.keyframe_points.insert(frame, value, options={'FAST'})
@@ -3132,11 +3132,293 @@ class MXTRoad_OT_GenerateCheckpoints(Operator):
         self.report({'INFO'}, f"{len(props.checkpoints)} checkpoints generated")
         return {'FINISHED'}
 
-class MXTRoad_OT_ExportTrackStub(Operator):
-    bl_idname = "mxt_road.export_track_stub"
-    bl_label = "Export Track (Stub)"
-    def execute(self,c):
-        self.report({'INFO'},"NYI"); return {'CANCELLED'}
+
+def _pack_curve(points):
+    import struct
+    data = struct.pack('<I', len(points))
+    for t, v, tan_l, tan_r in points:
+        data += struct.pack('<4f', t, v, tan_l, tan_r)
+    return data
+
+
+def _fcurve_to_points(fcu):
+    pts = []
+    if not fcu:
+        return pts
+    for kp in fcu.keyframe_points:
+        t = kp.co.x / 100.0
+        dt_l = (kp.co.x - kp.handle_left.x) / 100.0
+        dt_r = (kp.handle_right.x - kp.co.x) / 100.0
+        tan_l = ((kp.co.y - kp.handle_left.y) / dt_l) if dt_l != 0 else 0.0
+        tan_r = ((kp.handle_right.y - kp.co.y) / dt_r) if dt_r != 0 else 0.0
+        pts.append((t, kp.co.y, tan_l, tan_r))
+    return pts
+
+
+def _quaternion_matrix_points(fc_quat):
+    w, x, y, z = fc_quat
+    pts = [[] for _ in range(9)]
+    if not all(fc_quat):
+        return [ [] for _ in range(9) ]
+    for idx, kp in enumerate(w.keyframe_points):
+        frame = kp.co.x
+        t = frame / 100.0
+
+        # Evaluate this frame
+        q = Quaternion((
+            w.evaluate(frame),
+            x.evaluate(frame),
+            y.evaluate(frame),
+            z.evaluate(frame)
+        )).normalized()
+        mat = q.to_matrix()
+        vals = [
+            mat[0][0], mat[0][1], mat[0][2],
+            mat[1][0], mat[1][1], mat[1][2],
+            mat[2][0], mat[2][1], mat[2][2]
+        ]
+
+        # Estimate slopes from previous/next frame
+        if idx > 0:
+            frame_prev = w.keyframe_points[idx - 1].co.x
+            q_prev = Quaternion((
+                w.evaluate(frame_prev),
+                x.evaluate(frame_prev),
+                y.evaluate(frame_prev),
+                z.evaluate(frame_prev)
+            )).normalized()
+            mat_prev = q_prev.to_matrix()
+            vals_prev = [
+                mat_prev[0][0], mat_prev[0][1], mat_prev[0][2],
+                mat_prev[1][0], mat_prev[1][1], mat_prev[1][2],
+                mat_prev[2][0], mat_prev[2][1], mat_prev[2][2]
+            ]
+        else:
+            vals_prev = vals
+            frame_prev = frame
+
+        if idx + 1 < len(w.keyframe_points):
+            frame_next = w.keyframe_points[idx + 1].co.x
+            q_next = Quaternion((
+                w.evaluate(frame_next),
+                x.evaluate(frame_next),
+                y.evaluate(frame_next),
+                z.evaluate(frame_next)
+            )).normalized()
+            mat_next = q_next.to_matrix()
+            vals_next = [
+                mat_next[0][0], mat_next[0][1], mat_next[0][2],
+                mat_next[1][0], mat_next[1][1], mat_next[1][2],
+                mat_next[2][0], mat_next[2][1], mat_next[2][2]
+            ]
+        else:
+            vals_next = vals
+            frame_next = frame
+
+        # Average slopes
+        dt_prev = (frame - frame_prev) / 100.0 if frame != frame_prev else 1.0
+        dt_next = (frame_next - frame) / 100.0 if frame != frame_next else 1.0
+        for i in range(9):
+            slope_prev = (vals[i] - vals_prev[i]) / dt_prev
+            slope_next = (vals_next[i] - vals[i]) / dt_next
+            slope = 0.5 * (slope_prev + slope_next)
+            tan_l = slope
+            tan_r = slope
+            pts[i].append((t, vals[i], tan_l, tan_r))
+    return pts
+
+
+def _export_stage(context, filepath):
+    import struct
+    ts = context.scene.mxt_track_settings
+    first = ts.first_segment
+    if not first:
+        raise RuntimeError("First segment not set")
+
+    # gather segments in traversal order
+    seg_order = []
+    visited = set()
+    queue = [first]
+    while queue:
+        seg = queue.pop(0)
+        if not seg or seg in visited:
+            continue
+        visited.add(seg)
+        seg_order.append(seg)
+        props = seg.mxt_road_overall_props
+        for ref in props.next_segments:
+            if ref.segment and ref.segment not in visited:
+                queue.append(ref.segment)
+
+    seg_index = {s: i for i, s in enumerate(seg_order)}
+
+    cp_list = []
+    seg_cp_start = {}
+    cp_counts = {}
+    for seg in seg_order:
+        props = seg.mxt_road_overall_props
+        seg_cp_start[seg] = len(cp_list)
+        cp_counts[seg] = len(props.checkpoints)
+        for cp in props.checkpoints:
+            cp_list.append((seg, cp))
+
+    # compute neighbour indices
+    cp_indices = {}
+    for idx, (seg, cp) in enumerate(cp_list):
+        cp_indices[(seg, cp)] = idx
+
+    neighbours = [[] for _ in cp_list]
+    for seg in seg_order:
+        props = seg.mxt_road_overall_props
+        cps = props.checkpoints
+        for i, cp in enumerate(cps):
+            gidx = cp_indices[(seg, cp)]
+            if i == 0:
+                for prev in props.prev_segments:
+                    ps = prev.segment
+                    if ps and ps in seg_cp_start:
+                        last_idx = seg_cp_start[ps] + cp_counts[ps] - 1
+                        neighbours[gidx].append(last_idx)
+                if len(cps) > 1:
+                    neighbours[gidx].append(gidx + 1)
+            elif i == len(cps) - 1:
+                if i > 0:
+                    neighbours[gidx].append(gidx - 1)
+                for nxt in props.next_segments:
+                    ns = nxt.segment
+                    if ns and ns in seg_cp_start:
+                        neighbours[gidx].append(seg_cp_start[ns])
+            else:
+                neighbours[gidx].extend([gidx - 1, gidx + 1])
+
+    with open(filepath, 'wb') as f:
+        data = bytearray()
+
+        # checkpoints
+        for idx, (seg, cp) in enumerate(cp_list):
+            props = seg.mxt_road_overall_props
+            basis_start = Matrix((Vector(cp.basis_start[0:3]),
+                                 Vector(cp.basis_start[3:6]),
+                                 Vector(cp.basis_start[6:9]))).transposed()
+            basis_end = Matrix((Vector(cp.basis_end[0:3]),
+                               Vector(cp.basis_end[3:6]),
+                               Vector(cp.basis_end[6:9]))).transposed()
+            start_plane_n = basis_start.col[2].normalized()
+            end_plane_n = basis_end.col[2].normalized()
+            start_plane_d = start_plane_n.dot(Vector(cp.pos_start))
+            end_plane_d = end_plane_n.dot(Vector(cp.pos_end))
+
+            data += struct.pack('<3f', *cp.pos_start)
+            data += struct.pack('<3f', *cp.pos_end)
+            data += struct.pack('<9f', *cp.basis_start)
+            data += struct.pack('<9f', *cp.basis_end)
+            data += struct.pack('<f', cp.x_rad_start)
+            data += struct.pack('<f', cp.y_rad_start)
+            data += struct.pack('<f', cp.x_rad_end)
+            data += struct.pack('<f', cp.y_rad_end)
+            data += struct.pack('<f', cp.start_t)
+            data += struct.pack('<f', cp.end_t)
+            data += struct.pack('<f', cp.distance)
+            data += struct.pack('<I', seg_index[seg])
+            data += struct.pack('<3f', *start_plane_n)
+            data += struct.pack('<f', start_plane_d)
+            data += struct.pack('<3f', *end_plane_n)
+            data += struct.pack('<f', end_plane_d)
+            nbs = neighbours[idx][:2]
+            data += struct.pack('<I', len(nbs))
+            for nb in nbs:
+                data += struct.pack('<I', nb)
+
+        # segment data
+        seg_data = bytearray()
+        type_map = {'FLAT':0, 'CYLINDER':1, 'CYLINDER_OPEN':2, 'PIPE':3, 'PIPE_OPEN':4}
+        for seg in seg_order:
+            props = seg.mxt_road_overall_props
+            seg_data += struct.pack('<I', seg_index[seg])
+            road_type = type_map.get(props.road_shape_type, 0)
+            seg_data += struct.pack('<I', road_type)
+            if road_type in (2,4):
+                helper = props.openness_helper
+                fcu = None
+                if helper and helper.animation_data and helper.animation_data.action:
+                    fcu = helper.animation_data.action.fcurves.find('location', index=0)
+                seg_data += _pack_curve(_fcurve_to_points(fcu))
+
+            seg_data += struct.pack('<I', len(props.modulations))
+            for mod in props.modulations:
+                act = mod.helper.animation_data.action if mod.helper and mod.helper.animation_data else None
+                f_h = act.fcurves.find('location', index=1) if act else None
+                f_e = act.fcurves.find('location', index=2) if act else None
+                seg_data += _pack_curve(_fcurve_to_points(f_e))
+                seg_data += _pack_curve(_fcurve_to_points(f_h))
+
+            seg_data += struct.pack('<I', len(props.embeds))
+            for emb in props.embeds:
+                seg_data += struct.pack('<f', emb.start_t)
+                seg_data += struct.pack('<f', emb.end_t)
+                embed_type_map = {
+                    'RECHARGE':0,'DIRT':1,'ICE':2,'LAVA':3,'HOLE':4}
+                seg_data += struct.pack('<I', embed_type_map.get(emb.embed_type,0))
+                act = emb.helper.animation_data.action if emb.helper and emb.helper.animation_data else None
+                f_l = act.fcurves.find('location', index=1) if act else None
+                f_r = act.fcurves.find('location', index=2) if act else None
+                seg_data += _pack_curve(_fcurve_to_points(f_l))
+                seg_data += _pack_curve(_fcurve_to_points(f_r))
+
+            cm_helper = props.curve_matrix_helper_empty
+            act = cm_helper.animation_data.action if cm_helper and cm_helper.animation_data else None
+            fc_loc = [act.fcurves.find('location', index=i) for i in range(3)] if act else [None]*3
+            fc_rot = [act.fcurves.find('rotation_quaternion', index=i) for i in range(4)] if act else [None]*4
+            fc_scl = [act.fcurves.find('scale', index=i) for i in range(3)] if act else [None]*3
+
+            for fcu in fc_loc:
+                seg_data += _pack_curve(_fcurve_to_points(fcu))
+
+            rot_points = _quaternion_matrix_points(fc_rot)
+            rot_points_T = [rot_points[i] for i in (0,3,6,1,4,7,2,5,8)]
+
+            for pts in rot_points_T:
+                seg_data += _pack_curve(pts)
+
+            for fcu in fc_scl:
+                seg_data += _pack_curve(_fcurve_to_points(fcu))
+
+            seg_data += struct.pack('<f', 5.0)
+            seg_data += struct.pack('<f', 5.0)
+
+        header = struct.pack('<I4sII', 0, b'v0.2', len(cp_list), len(seg_order))
+        header = struct.pack('<I', len(header)) + header[4:]
+        f.write(header)
+        f.write(data)
+        f.write(seg_data)
+
+class MXTRoad_OT_ExportTrack(Operator):
+    """Export the currently edited stage to an .mxt_track file"""
+
+    bl_idname = "mxt_road.export_track"
+    bl_label = "Export Track"
+    filename_ext = ".mxt_track"
+
+    filepath: StringProperty(subtype='FILE_PATH')
+    filter_glob: StringProperty(default="*.mxt_track", options={'HIDDEN'})
+
+    @classmethod
+    def poll(cls, ctx):
+        ts = getattr(ctx.scene, "mxt_track_settings", None)
+        return ts and ts.first_segment is not None
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        try:
+            _export_stage(context, self.filepath)
+        except Exception as e:
+            self.report({'ERROR'}, f"Export failed: {e}")
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Track exported")
+        return {'FINISHED'}
 classes_to_register = (
     MXTSegmentRef,
     MXTTrackSettings,
@@ -3169,7 +3451,7 @@ classes_to_register = (
     MXTRoad_OT_GenerateCurveMatrix,
     MXTRoad_OT_GenerateMesh,
     MXTRoad_OT_GenerateCheckpoints,
-    MXTRoad_OT_ExportTrackStub,
+    MXTRoad_OT_ExportTrack,
 )
 def register():
     global mxt_roads_pending_visual_update, mxt_timer_is_active, _timer_live
