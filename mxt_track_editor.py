@@ -3475,8 +3475,9 @@ def _export_stage(context, filepath):
             for fcu in fc_scl:
                 seg_data += _pack_curve(_fcurve_to_points(fcu))
 
-            seg_data += struct.pack('<f', 5.0)
-            seg_data += struct.pack('<f', 5.0)
+            # Store the rail heights for this segment
+            seg_data += struct.pack('<f', getattr(props, "rail_height_left", 5.0))
+            seg_data += struct.pack('<f', getattr(props, "rail_height_right", 5.0))
 
         header = struct.pack('<I4sII', 0, b'v0.2', len(cp_list), len(seg_order))
         header = struct.pack('<I', len(header)) + header[4:]
@@ -3505,7 +3506,13 @@ def _export_stage(context, filepath):
         for obj in preview_meshes:
             obj.select_set(True)
         bpy.context.view_layer.objects.active = preview_meshes[0]
-        bpy.ops.export_scene.obj(filepath=obj_path, use_selection=True, use_mesh_modifiers=True)
+        # Blender 4.0 renamed the OBJ export operator. Try the new name first
+        if hasattr(bpy.ops.wm, "obj_export"):
+            bpy.ops.wm.obj_export(filepath=obj_path, export_selected_objects=True)
+        elif hasattr(bpy.ops.export_scene, "obj"):
+            bpy.ops.export_scene.obj(filepath=obj_path, use_selection=True, use_mesh_modifiers=True)
+        else:
+            raise RuntimeError("OBJ export operator not found")
         bpy.ops.object.select_all(action='DESELECT')
         for obj in orig_sel:
             obj.select_set(True)
