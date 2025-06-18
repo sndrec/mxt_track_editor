@@ -273,7 +273,7 @@ class MXTRoad_RoadSegmentOverallProperties(PropertyGroup):
     rail_height_left: FloatProperty(
         name="Left Rail Height",
         description="Height of the left rail above the road surface",
-        default=0.0,
+        default=0.15,
         min=0.0,
         update=lambda self, ctx: schedule_mesh_build(self.id_data)
     )
@@ -281,7 +281,7 @@ class MXTRoad_RoadSegmentOverallProperties(PropertyGroup):
     rail_height_right: FloatProperty(
         name="Right Rail Height",
         description="Height of the right rail above the road surface",
-        default=0.0,
+        default=0.15,
         min=0.0,
         update=lambda self, ctx: schedule_mesh_build(self.id_data)
     )
@@ -1345,6 +1345,9 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
 
         cp0.scale = Vector((45, 45, 1))
         cp1.scale = Vector((45, 45, 1))
+        # Initialize rail heights
+        props.rail_height_left = 0.15
+        props.rail_height_right = 0.15
 
         
         if prev_seg:
@@ -1366,7 +1369,8 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
             for attr in ("road_shape_type", "horiz_subdivs",
                          "road_uv_multiplier", "mesh_subdivision_length",
                          "mesh_subdivision_angle_deg",
-                         "num_checkpoints_per_segment"):
+                         "num_checkpoints_per_segment",
+                         "rail_height_left", "rail_height_right"):
                 setattr(props, attr, getattr(prev_props, attr))
                 
             
@@ -2936,6 +2940,7 @@ class MXTRoad_OT_GenerateMesh(Operator):
                 b0 = row * num_x + offset
                 b1 = (row + 1) * num_x + offset
                 face = [b0, b1, top_indices[row+1], top_indices[row]]
+                face = list(reversed(face))  # Flip winding so faces point inward
                 all_faces.append(face)
                 rail_faces.append(face)
                 rail_face_indices.add(len(all_faces) - 1)
