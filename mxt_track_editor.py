@@ -269,6 +269,22 @@ class MXTRoad_RoadSegmentOverallProperties(PropertyGroup):
     mesh_subdivision_angle_deg: FloatProperty(name="Mesh Subdiv Angle", default=8.0, min=0.1, max=90.0,
     update=lambda self, ctx: schedule_mesh_build(self.id_data))
     num_checkpoints_per_segment: IntProperty(name="Checkpoints in Segment", default=8, min=0)
+
+    rail_height_left: FloatProperty(
+        name="Left Rail Height",
+        description="Height of the left rail above the road surface",
+        default=0.0,
+        min=0.0,
+        update=lambda self, ctx: schedule_mesh_build(self.id_data)
+    )
+
+    rail_height_right: FloatProperty(
+        name="Right Rail Height",
+        description="Height of the right rail above the road surface",
+        default=0.0,
+        min=0.0,
+        update=lambda self, ctx: schedule_mesh_build(self.id_data)
+    )
     modulations: CollectionProperty(type=MXTModulation)
     active_mod_index: IntProperty(
         name="Active Modulation Index",
@@ -1996,6 +2012,11 @@ class MXTRoad_PT_MainPanel(Panel):
         mesh_gen_box = common_box.box(); mesh_gen_box.label(text="Adaptive Mesh Settings:")
         mesh_gen_box.prop(road_props, "mesh_subdivision_length"); mesh_gen_box.prop(road_props, "mesh_subdivision_angle_deg")
 
+        rails_box = common_box.box()
+        rails_box.label(text="Rails:")
+        rails_box.prop(road_props, "rail_height_left")
+        rails_box.prop(road_props, "rail_height_right")
+
         
         mods_box = layout.box(); mods_box.label(text="Vertical Modulations & Embeds")
         mods_box.prop(road_props, "draw_embeds")
@@ -2869,10 +2890,51 @@ class MXTRoad_OT_GenerateMesh(Operator):
         cl_pos_f, cl_quat_f, cl_scl_f = _sample_curve_matrix_numpy(helper, np.minimum(ty_1d + epsilon, 1.0))
         PF = _calculate_vertex_positions_numpy(props, cl_pos_f, cl_quat_f, cl_scl_f, tx_grid, ty_grid + epsilon)
         PR = _calculate_vertex_positions_numpy(props, centerline_pos, centerline_quat, centerline_scl, tx_grid + epsilon, ty_grid)
+        cl_rot_mats = quaternions_to_rotation_matrices_numpy(centerline_quat)
         N_main = np.cross(PF - P0, PR - P0); norms = np.linalg.norm(N_main, axis=2, keepdims=True); norms[norms==0]=1.0; N_main /= norms
         main_road_vertex_normals = N_main.reshape(-1, 3)
         for face in main_road_faces:
             for v_idx in face: all_loop_normals.append(main_road_vertex_normals[v_idx])
+
+        rail_faces = []
+
+        if getattr(props, "rail_height_left", 0.0) > 0.0:
+            h = props.rail_height_left
+            top_indices = []
+            for row in range(num_y):
+                base_idx = row * num_x
+                base_vert = verts_co[base_idx]
+                up_vec = cl_rot_mats[row] @ np.array([0.0, h * centerline_scl[row,1], 0.0])
+                all_verts.append((base_vert + up_vec).tolist())
+                all_uvs_per_vert.append(uvs_per_vert[base_idx])
+                top_indices.append(len(all_verts) - 1)
+            for row in range(num_y-1):
+                face = [row*num_x, (row+1)*num_x, top_indices[row+1], top_indices[row]]
+                all_faces.append(face)
+                rail_faces.append(face)
+                all_material_indices.append(get_mat_idx('track_surface'))
+
+        if getattr(props, "rail_height_right", 0.0) > 0.0:
+            h = props.rail_height_right
+            top_indices = []
+            offset = num_x - 1
+            for row in range(num_y):
+                base_idx = row * num_x + offset
+                base_vert = verts_co[base_idx]
+                up_vec = cl_rot_mats[row] @ np.array([0.0, h * centerline_scl[row,1], 0.0])
+                all_verts.append((base_vert + up_vec).tolist())
+                all_uvs_per_vert.append(uvs_per_vert[base_idx])
+                top_indices.append(len(all_verts) - 1)
+            for row in range(num_y-1):
+                b0 = row*num_x+offset
+                b1 = (row+1)*num_x+offset
+                face = [b0, b1, top_indices[row+1], top_indices[row]]
+                all_faces.append(face)
+                rail_faces.append(face)
+                all_material_indices.append(get_mat_idx('track_surface'))
+
+        if rail_faces:
+            all_loop_normals.extend(MXTRoad_OT_GenerateMesh._get_smooth_strip_normals(np.array(all_verts), rail_faces))
 
         
         if hasattr(props, "embeds"):
