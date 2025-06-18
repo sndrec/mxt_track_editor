@@ -2882,6 +2882,7 @@ class MXTRoad_OT_GenerateMesh(Operator):
         all_verts = list(verts_co)
         all_faces = main_road_faces.tolist()
         all_uvs_per_vert = list(uvs_per_vert)
+        rail_face_indices = set()
         all_loop_normals = []
         all_material_indices = [get_mat_idx('track_surface')] * len(main_road_faces)
 
@@ -2907,7 +2908,8 @@ class MXTRoad_OT_GenerateMesh(Operator):
                 base_vert = verts_co[base_idx]
                 up_vec = cl_rot_mats[row] @ np.array([0.0, h * centerline_scl[row,1], 0.0])
                 all_verts.append((base_vert + up_vec).tolist())
-                all_uvs_per_vert.append(uvs_per_vert[base_idx])
+                base_uv = uvs_per_vert[base_idx]
+                all_uvs_per_vert.append([1.0, base_uv[1]])
                 top_indices.append(len(all_verts) - 1)
             for row in range(num_y-1):
                 b0 = row * num_x + offset
@@ -2915,6 +2917,7 @@ class MXTRoad_OT_GenerateMesh(Operator):
                 face = [b0, b1, top_indices[row+1], top_indices[row]]
                 all_faces.append(face)
                 rail_faces.append(face)
+                rail_face_indices.add(len(all_faces) - 1)
                 all_material_indices.append(get_mat_idx('track_rail'))
 
         if getattr(props, "rail_height_right", 0.0) > 0.0:
@@ -2926,7 +2929,8 @@ class MXTRoad_OT_GenerateMesh(Operator):
                 base_vert = verts_co[base_idx]
                 up_vec = cl_rot_mats[row] @ np.array([0.0, h * centerline_scl[row,1], 0.0])
                 all_verts.append((base_vert + up_vec).tolist())
-                all_uvs_per_vert.append(uvs_per_vert[base_idx])
+                base_uv = uvs_per_vert[base_idx]
+                all_uvs_per_vert.append([1.0, base_uv[1]])
                 top_indices.append(len(all_verts) - 1)
             for row in range(num_y-1):
                 b0 = row * num_x + offset
@@ -2934,6 +2938,7 @@ class MXTRoad_OT_GenerateMesh(Operator):
                 face = [b0, b1, top_indices[row+1], top_indices[row]]
                 all_faces.append(face)
                 rail_faces.append(face)
+                rail_face_indices.add(len(all_faces) - 1)
                 all_material_indices.append(get_mat_idx('track_rail'))
 
         if rail_faces:
@@ -3061,7 +3066,16 @@ class MXTRoad_OT_GenerateMesh(Operator):
         mesh.update(); mesh.validate()
 
         if not mesh.uv_layers: mesh.uv_layers.new(name="UVMap")
-        loop_uvs = final_uvs_per_vert[final_faces_as_indices.ravel()]
+        loop_uvs = []
+        for face_idx, face in enumerate(final_faces_as_indices):
+            if face_idx in rail_face_indices:
+                b0, b1, t1, t0 = face
+                y0 = final_uvs_per_vert[b0][1]; y1 = final_uvs_per_vert[b1][1]
+                loop_uvs.extend([[0.0, y0], [0.0, y1], [1.0, y1], [1.0, y0]])
+            else:
+                for v_idx in face:
+                    loop_uvs.append(final_uvs_per_vert[v_idx])
+        loop_uvs = np.array(loop_uvs, dtype=np.float32)
         mesh.uv_layers.active.data.foreach_set('uv', loop_uvs.ravel())
 
         mesh.normals_split_custom_set(all_loop_normals)
