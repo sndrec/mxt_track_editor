@@ -3230,6 +3230,7 @@ def _quaternion_matrix_points(fc_quat):
 
 def _export_stage(context, filepath):
     import struct
+    import os
     ts = context.scene.mxt_track_settings
     first = ts.first_segment
     if not first:
@@ -3249,6 +3250,13 @@ def _export_stage(context, filepath):
         for ref in props.next_segments:
             if ref.segment and ref.segment not in visited:
                 queue.append(ref.segment)
+
+    # Build preview meshes so they can be exported
+    for seg in seg_order:
+        try:
+            _build_mesh_direct(seg)
+        except Exception:
+            pass
 
     seg_index = {s: i for i, s in enumerate(seg_order)}
 
@@ -3391,6 +3399,35 @@ def _export_stage(context, filepath):
         f.write(header)
         f.write(data)
         f.write(seg_data)
+
+    # Export preview meshes as OBJ
+    obj_path = os.path.splitext(filepath)[0] + ".obj"
+    preview_meshes = []
+    for seg in seg_order:
+        mesh_name = f"{seg.name}_PreviewMesh"
+        mesh_obj = next((c for c in seg.children if c.name == mesh_name), None)
+        if mesh_obj:
+            preview_meshes.append(mesh_obj)
+
+    if preview_meshes:
+        prev_mode = None
+        if bpy.context.object and bpy.context.object.mode != 'OBJECT':
+            prev_mode = bpy.context.object.mode
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        orig_active = bpy.context.view_layer.objects.active
+        orig_sel = [obj for obj in bpy.context.selected_objects]
+        bpy.ops.object.select_all(action='DESELECT')
+        for obj in preview_meshes:
+            obj.select_set(True)
+        bpy.context.view_layer.objects.active = preview_meshes[0]
+        bpy.ops.export_scene.obj(filepath=obj_path, use_selection=True, use_mesh_modifiers=True)
+        bpy.ops.object.select_all(action='DESELECT')
+        for obj in orig_sel:
+            obj.select_set(True)
+        bpy.context.view_layer.objects.active = orig_active
+        if prev_mode:
+            bpy.ops.object.mode_set(mode=prev_mode)
 
 class MXTRoad_OT_ExportTrack(Operator):
     """Export the currently edited stage to an .mxt_track file"""
