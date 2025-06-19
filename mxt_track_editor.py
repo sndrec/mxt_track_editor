@@ -181,6 +181,23 @@ class MXTTrackSettings(PropertyGroup):
         poll=lambda self, obj: obj.type == 'EMPTY'
     )
 
+    track_name: StringProperty(
+        name="Track Name",
+        default="New Track"
+    )
+
+    track_description: StringProperty(
+        name="Description",
+        default=""
+    )
+
+    track_difficulty: IntProperty(
+        name="Difficulty",
+        default=1,
+        min=1,
+        max=10
+    )
+
 
 def mxt_segment_type_update(self, context):
     if get_active_mxt_road_segment_parent(context):
@@ -1901,6 +1918,9 @@ class MXTRoad_PT_MainPanel(Panel):
         ts = context.scene.mxt_track_settings
         if ts:
             layout.prop(ts, "first_segment")
+            layout.prop(ts, "track_name")
+            layout.prop(ts, "track_description")
+            layout.prop(ts, "track_difficulty")
         layout.separator()
 
         active_road_parent = get_active_mxt_road_segment_parent(context)
@@ -3320,6 +3340,14 @@ def _export_stage(context, filepath):
     if not first:
         raise RuntimeError("First segment not set")
 
+    base_path = os.path.splitext(filepath)[0]
+
+    metadata = {
+        "name": ts.track_name,
+        "description": ts.track_description,
+        "difficulty": ts.track_difficulty,
+    }
+
     # gather segments in traversal order
     seg_order = []
     visited = set()
@@ -3486,7 +3514,7 @@ def _export_stage(context, filepath):
         f.write(seg_data)
 
     # Export preview meshes as OBJ
-    obj_path = os.path.splitext(filepath)[0] + ".obj"
+    obj_path = base_path + ".obj"
     preview_meshes = []
     for seg in seg_order:
         mesh_name = f"{seg.name}_PreviewMesh"
@@ -3520,6 +3548,11 @@ def _export_stage(context, filepath):
         if prev_mode:
             bpy.ops.object.mode_set(mode=prev_mode)
 
+    json_path = base_path + ".json"
+    import json
+    with open(json_path, "w", encoding="utf-8") as jf:
+        json.dump(metadata, jf, indent=2)
+
 class MXTRoad_OT_ExportTrack(Operator):
     """Export the currently edited stage to an .mxt_track file"""
 
@@ -3541,7 +3574,10 @@ class MXTRoad_OT_ExportTrack(Operator):
 
     def execute(self, context):
         try:
-            _export_stage(context, self.filepath)
+            filepath = self.filepath
+            if not filepath.lower().endswith('.mxt_track'):
+                filepath += '.mxt_track'
+            _export_stage(context, filepath)
         except Exception as e:
             self.report({'ERROR'}, f"Export failed: {e}")
             return {'CANCELLED'}
