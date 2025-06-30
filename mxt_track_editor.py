@@ -3482,7 +3482,7 @@ def _export_stage(context, filepath):
             data += struct.pack('<f', start_plane_d)
             data += struct.pack('<3f', *end_plane_n)
             data += struct.pack('<f', end_plane_d)
-            nbs = neighbours[idx][:2]
+            nbs = sorted(set(neighbours[idx]))
             data += struct.pack('<I', len(nbs))
             for nb in nbs:
                 data += struct.pack('<I', nb)
