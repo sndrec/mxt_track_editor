@@ -3348,8 +3348,8 @@ def _export_stage(context, filepath):
         "difficulty": ts.track_difficulty,
     }
 
-    # gather segments in traversal order
-    seg_order = []
+    # gather all reachable segments
+    segs = []
     visited = set()
     queue = [first]
     while queue:
@@ -3357,11 +3357,46 @@ def _export_stage(context, filepath):
         if not seg or seg in visited:
             continue
         visited.add(seg)
-        seg_order.append(seg)
+        segs.append(seg)
         props = seg.mxt_road_overall_props
         for ref in props.next_segments:
             if ref.segment and ref.segment not in visited:
                 queue.append(ref.segment)
+
+    # attempt topological ordering to keep indices increasing along forward paths
+    indeg = {s: 0 for s in visited}
+    for seg in visited:
+        props = seg.mxt_road_overall_props
+        for ref in props.next_segments:
+            nxt = ref.segment
+            if nxt and nxt in indeg and nxt != first:
+                indeg[nxt] += 1
+
+    seg_order = []
+    q = [s for s in segs if indeg[s] == 0]
+    # ensure first segment is processed first
+    if first in q:
+        q.remove(first)
+        q.insert(0, first)
+
+    seen = set()
+    while q:
+        seg = q.pop(0)
+        if seg in seen:
+            continue
+        seen.add(seg)
+        seg_order.append(seg)
+        props = seg.mxt_road_overall_props
+        for ref in props.next_segments:
+            nxt = ref.segment
+            if nxt and nxt in indeg and nxt != first:
+                indeg[nxt] -= 1
+                if indeg[nxt] == 0:
+                    q.append(nxt)
+
+    for seg in segs:
+        if seg not in seen:
+            seg_order.append(seg)
 
     # Build preview meshes so they can be exported
     for seg in seg_order:
@@ -3398,7 +3433,8 @@ def _export_stage(context, filepath):
                     ps = prev.segment
                     if ps and ps in seg_cp_start:
                         last_idx = seg_cp_start[ps] + cp_counts[ps] - 1
-                        neighbours[gidx].append(last_idx)
+                        if last_idx < gidx or ps == first:
+                            neighbours[gidx].append(last_idx)
                 if len(cps) > 1:
                     neighbours[gidx].append(gidx + 1)
             elif i == len(cps) - 1:
@@ -3407,7 +3443,9 @@ def _export_stage(context, filepath):
                 for nxt in props.next_segments:
                     ns = nxt.segment
                     if ns and ns in seg_cp_start:
-                        neighbours[gidx].append(seg_cp_start[ns])
+                        nidx = seg_cp_start[ns]
+                        if nidx > gidx or ns == first:
+                            neighbours[gidx].append(nidx)
             else:
                 neighbours[gidx].extend([gidx - 1, gidx + 1])
 
@@ -3444,7 +3482,7 @@ def _export_stage(context, filepath):
             data += struct.pack('<f', start_plane_d)
             data += struct.pack('<3f', *end_plane_n)
             data += struct.pack('<f', end_plane_d)
-            nbs = neighbours[idx][:2]
+            nbs = sorted(set(neighbours[idx]))
             data += struct.pack('<I', len(nbs))
             for nb in nbs:
                 data += struct.pack('<I', nb)

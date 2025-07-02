@@ -30,8 +30,8 @@ start_plane.normal              Vector3         3 x float
 start_plane.d                   float
 end_plane.normal                Vector3         3 x float
 end_plane.d                     float
-connection_count                u32             1 or 2
-connected_checkpoint_idx[n]     u32 x n         Index of connected checkpoint(s)
+connection_count                u32             number of connected checkpoints
+connected_checkpoint_idx[n]     u32 x n         Index of each connected checkpoint
 
 
 SEGMENT DATA (per segment)
