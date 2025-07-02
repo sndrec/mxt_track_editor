@@ -327,8 +327,17 @@ class MXTRoad_RoadSegmentOverallProperties(PropertyGroup):
                ('SPIRAL', "Spiral", "A procedural spiral/helix segment")],
         default='BEZIER',
         description="Choose the method for generating the road segment's path",
-        
+
         update=mxt_segment_type_update
+    )
+
+    rotation_mode: EnumProperty(
+        name="Rotation Mode",
+        items=[('SMART', "Smart", "Solve orientation along path"),
+               ('SIMPLE', "Simple", "Direct slerp between control point rotations")],
+        default='SMART',
+        description="Orientation calculation method for Bezier segments",
+        update=lambda self, ctx: schedule_cm_rebake(self.id_data)
     )
 
     
@@ -1387,7 +1396,8 @@ class MXTRoad_OT_CreateRoadSegment(Operator):
                          "road_uv_multiplier", "mesh_subdivision_length",
                          "mesh_subdivision_angle_deg",
                          "num_checkpoints_per_segment",
-                         "rail_height_left", "rail_height_right"):
+                         "rail_height_left", "rail_height_right",
+                         "rotation_mode"):
                 setattr(props, attr, getattr(prev_props, attr))
                 
             
@@ -1945,6 +1955,8 @@ class MXTRoad_PT_MainPanel(Panel):
         
         
         parent_box.prop(road_props, "segment_type")
+        if road_props.segment_type == 'BEZIER':
+            parent_box.prop(road_props, "rotation_mode")
         conn_box = parent_box.box()
         conn_box.label(text="Connections:")
         row = conn_box.row()
@@ -2153,6 +2165,7 @@ class MXTRoad_OT_GenerateCurveMatrix(Operator):
         for fcu in curves.values():
             fcu.keyframe_points.clear()
         helper.rotation_mode = 'QUATERNION'
+        rot_mode = road_parent.mxt_road_overall_props.rotation_mode
         for t in t_samples:
             span = next(i for i in range(len(cps)-1) if t <= cps[i+1].mxt_cp_data.time)
             a, b = cps[span], cps[span+1]
@@ -2175,31 +2188,32 @@ class MXTRoad_OT_GenerateCurveMatrix(Operator):
             forward_dir = dp.normalized()
             rot_fac   = MXTRoad_OT_GenerateCurveMatrix._eval_channel(a, "rotation_ease_factor_channel", bt)
             scale_fac = MXTRoad_OT_GenerateCurveMatrix._eval_channel(a, "scale_ease_factor_channel", bt)
-            twist_fac = MXTRoad_OT_GenerateCurveMatrix._eval_channel(a, "twist_ease_factor_channel", bt)
             ra = a.rotation_euler.to_quaternion()
             rb = b.rotation_euler.to_quaternion()
-            if rot_fac > 0 and rot_fac < 1:
-                base_rot = ra.slerp(rb, rot_fac)
-            z_start       = ra @ Vector((0, 0, 1))
-            q_to_fwd      = MXTRoad_OT_GenerateCurveMatrix._quat_from_to(
-                               z_start, forward_dir)
-            rot_fwd_start = q_to_fwd @ ra
-            z_end         = rb @ Vector((0, 0, 1))
-            q_align_end   = MXTRoad_OT_GenerateCurveMatrix._quat_from_to(
-                               z_start, z_end)
-            rot_fwd_end   = q_align_end @ ra
-            z_fwd_end_fix = rot_fwd_end @ Vector((0, 0, 1))
-            q_fix_end     = MXTRoad_OT_GenerateCurveMatrix._quat_from_to(
-                               z_fwd_end_fix, z_end)
-            rot_fwd_end   = q_fix_end @ rot_fwd_end
-            y_fixed = rot_fwd_end @ Vector((0, 1, 0))
-            y_real  = rb          @ Vector((0, 1, 0))
-            axis_z  = z_end
-            twist_end = MXTRoad_OT_GenerateCurveMatrix._signed_angle(
-                           y_fixed, y_real, axis_z)
-            twist_cur = twist_end * twist_fac
-            q_twist   = Quaternion(forward_dir, twist_cur)
-            final_rot = q_twist @ rot_fwd_start
+            if rot_mode == 'SIMPLE':
+                final_rot = ra.slerp(rb, rot_fac)
+            else:
+                twist_fac = MXTRoad_OT_GenerateCurveMatrix._eval_channel(a, "twist_ease_factor_channel", bt)
+                z_start       = ra @ Vector((0, 0, 1))
+                q_to_fwd      = MXTRoad_OT_GenerateCurveMatrix._quat_from_to(
+                                   z_start, forward_dir)
+                rot_fwd_start = q_to_fwd @ ra
+                z_end         = rb @ Vector((0, 0, 1))
+                q_align_end   = MXTRoad_OT_GenerateCurveMatrix._quat_from_to(
+                                   z_start, z_end)
+                rot_fwd_end   = q_align_end @ ra
+                z_fwd_end_fix = rot_fwd_end @ Vector((0, 0, 1))
+                q_fix_end     = MXTRoad_OT_GenerateCurveMatrix._quat_from_to(
+                                   z_fwd_end_fix, z_end)
+                rot_fwd_end   = q_fix_end @ rot_fwd_end
+                y_fixed = rot_fwd_end @ Vector((0, 1, 0))
+                y_real  = rb          @ Vector((0, 1, 0))
+                axis_z  = z_end
+                twist_end = MXTRoad_OT_GenerateCurveMatrix._signed_angle(
+                               y_fixed, y_real, axis_z)
+                twist_cur = twist_end * twist_fac
+                q_twist   = Quaternion(forward_dir, twist_cur)
+                final_rot = q_twist @ rot_fwd_start
             scale = a.scale.lerp(b.scale, scale_fac)
             helper.location = pos
             helper.rotation_quaternion = final_rot
@@ -2220,7 +2234,7 @@ class MXTRoad_OT_GenerateCurveMatrix(Operator):
             _linearize_fcurve_handles_smooth(fc)
             fc.update()
         if isinstance(MXTRoad_OT_GenerateCurveMatrix, Operator):
-            if report_fn: report_fn({'INFO'}, f"Baked {len(t_samples)} keys with full orientation logic.")
+            if report_fn: report_fn({'INFO'}, f"Baked {len(t_samples)} keys with {rot_mode.lower()} rotation.")
         return True
     @staticmethod
     def _auto_calc_line_easing(start_point, start_quat, end_quat, start_scl, end_scl):
